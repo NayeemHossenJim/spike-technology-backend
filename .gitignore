@@ -13,3 +13,4 @@ build/
 *.egg-info/
 postgres_data/
 redis_data/
+tests/
