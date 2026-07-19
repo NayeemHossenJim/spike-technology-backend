@@ -10,12 +10,13 @@ from app.schemas.auth import (
     LoginRequest,
     LogoutRequest,
     MessageResponse,
-    OpaqueTokenRequest,
     RefreshRequest,
     RegisterRequest,
     ResetPasswordRequest,
     TokenPairResponse,
     UserRead,
+    VerifyEmailOTPRequest,
+    VerifyPasswordResetOTPRequest,
 )
 from app.services.auth import (
     AuthenticationError,
@@ -45,14 +46,14 @@ async def register(payload: RegisterRequest, service: AuthServiceDep, _: RateLim
 
 @router.post("/verify-email", response_model=MessageResponse)
 async def verify_email(
-    payload: OpaqueTokenRequest, service: AuthServiceDep, _: RateLimitDep
+    payload: VerifyEmailOTPRequest, service: AuthServiceDep, _: RateLimitDep
 ) -> MessageResponse:
     try:
-        await service.verify_email(payload.token)
+        await service.verify_email(payload)
     except TokenValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The verification link is invalid or has expired.",
+            detail="The verification OTP is invalid or has expired.",
         ) from exc
     return MessageResponse(message="Email verified successfully.")
 
@@ -127,8 +128,22 @@ async def forgot_password(
 ) -> MessageResponse:
     await service.request_password_reset(payload)
     return MessageResponse(
-        message="If an eligible account exists, a password reset email will be sent."
+        message="If an eligible account exists, a password-reset OTP will be sent."
     )
+
+
+@router.post("/verify-password-reset-otp", response_model=MessageResponse)
+async def verify_password_reset_otp(
+    payload: VerifyPasswordResetOTPRequest, service: AuthServiceDep, _: RateLimitDep
+) -> MessageResponse:
+    try:
+        await service.verify_password_reset_otp(payload)
+    except TokenValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The password-reset OTP is invalid or has expired.",
+        ) from exc
+    return MessageResponse(message="Password-reset OTP verified successfully.")
 
 
 @router.post("/reset-password", response_model=MessageResponse)
@@ -142,6 +157,6 @@ async def reset_password(
     except TokenValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The password-reset link is invalid or has expired.",
+            detail="The password-reset OTP is invalid, expired, or has not been verified.",
         ) from exc
     return MessageResponse(message="Password reset successfully. Please sign in again.")

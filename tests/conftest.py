@@ -41,14 +41,14 @@ from app.services.email import get_email_sender  # noqa: E402
 
 @dataclass
 class InMemoryEmailSender:
-    verification_messages: list[tuple[str, str]] = field(default_factory=list)
-    reset_messages: list[tuple[str, str]] = field(default_factory=list)
+    verification_otps: list[tuple[str, str]] = field(default_factory=list)
+    password_reset_otps: list[tuple[str, str]] = field(default_factory=list)
 
-    async def send_verification_email(self, recipient: str, token: str) -> None:
-        self.verification_messages.append((recipient, token))
+    async def send_verification_otp(self, recipient: str, otp: str) -> None:
+        self.verification_otps.append((recipient, otp))
 
-    async def send_password_reset_email(self, recipient: str, token: str) -> None:
-        self.reset_messages.append((recipient, token))
+    async def send_password_reset_otp(self, recipient: str, otp: str) -> None:
+        self.password_reset_otps.append((recipient, otp))
 
 
 @pytest.fixture

@@ -1,15 +1,47 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlmodel import select
 
+from app.core.security import utc_now
+from app.models.auth import EmailVerificationOTP
 from tests.conftest import InMemoryEmailSender
 
 
+def assert_six_digit_otp(value: str) -> None:
+    assert len(value) == 6
+    assert value.isdigit()
+
+
+async def make_verification_otp_resendable(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        result = await session.execute(select(EmailVerificationOTP))
+        otp_record = result.scalar_one()
+        otp_record.created_at = utc_now() - timedelta(seconds=61)
+        await session.commit()
+
+
+async def get_verification_otps(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> list[EmailVerificationOTP]:
+    async with session_factory() as session:
+        result = await session.execute(
+            select(EmailVerificationOTP).order_by(EmailVerificationOTP.created_at)
+        )
+        return list(result.scalars().all())
+
+
 @pytest.mark.integration
-async def test_register_verify_login_refresh_logout(
+async def test_register_resend_verify_login_refresh_logout(
     client: AsyncClient,
     email_sender: InMemoryEmailSender,
+    session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     registration = await client.post(
         "/api/v1/auth/register",
@@ -21,7 +53,9 @@ async def test_register_verify_login_refresh_logout(
     )
     assert registration.status_code == 201
     assert registration.json()["is_verified"] is False
-    assert len(email_sender.verification_messages) == 1
+    assert len(email_sender.verification_otps) == 1
+    first_otp = email_sender.verification_otps[0][1]
+    assert_six_digit_otp(first_otp)
 
     unverified_login = await client.post(
         "/api/v1/auth/login",
@@ -29,10 +63,27 @@ async def test_register_verify_login_refresh_logout(
     )
     assert unverified_login.status_code == 403
 
-    verification_token = email_sender.verification_messages[0][1]
+    cooldown_resend = await client.post(
+        "/api/v1/auth/resend-verification", json={"email": "test@example.com"}
+    )
+    assert cooldown_resend.status_code == 202
+    assert len(email_sender.verification_otps) == 1
+
+    await make_verification_otp_resendable(session_factory)
+    resend = await client.post(
+        "/api/v1/auth/resend-verification", json={"email": "test@example.com"}
+    )
+    assert resend.status_code == 202
+    assert len(email_sender.verification_otps) == 2
+    verification_otp = email_sender.verification_otps[-1][1]
+    assert_six_digit_otp(verification_otp)
+    otp_records = await get_verification_otps(session_factory)
+    assert otp_records[0].used_at is not None
+    assert otp_records[1].used_at is None
+
     verification = await client.post(
         "/api/v1/auth/verify-email",
-        json={"token": verification_token},
+        json={"email": "test@example.com", "otp": verification_otp},
     )
     assert verification.status_code == 200
 
@@ -77,7 +128,65 @@ async def test_register_verify_login_refresh_logout(
 
 
 @pytest.mark.integration
-async def test_password_reset_revokes_existing_refresh_tokens(
+async def test_signup_otp_locks_after_five_wrong_attempts(
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+) -> None:
+    await client.post(
+        "/api/v1/auth/register",
+        json={
+            "full_name": "Lock Test",
+            "email": "lock@example.com",
+            "password": "CorrectHorseBattery9",
+        },
+    )
+    otp = email_sender.verification_otps[0][1]
+    wrong_otp = "000000" if otp != "000000" else "000001"
+
+    for _ in range(5):
+        response = await client.post(
+            "/api/v1/auth/verify-email",
+            json={"email": "lock@example.com", "otp": wrong_otp},
+        )
+        assert response.status_code == 400
+
+    locked_otp = await client.post(
+        "/api/v1/auth/verify-email",
+        json={"email": "lock@example.com", "otp": otp},
+    )
+    assert locked_otp.status_code == 400
+
+
+@pytest.mark.integration
+async def test_expired_signup_otp_is_rejected(
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await client.post(
+        "/api/v1/auth/register",
+        json={
+            "full_name": "Expired OTP",
+            "email": "expired@example.com",
+            "password": "CorrectHorseBattery9",
+        },
+    )
+    otp = email_sender.verification_otps[0][1]
+    async with session_factory() as session:
+        result = await session.execute(select(EmailVerificationOTP))
+        otp_record = result.scalar_one()
+        otp_record.expires_at = utc_now() - timedelta(seconds=1)
+        await session.commit()
+
+    expired = await client.post(
+        "/api/v1/auth/verify-email",
+        json={"email": "expired@example.com", "otp": otp},
+    )
+    assert expired.status_code == 400
+
+
+@pytest.mark.integration
+async def test_password_reset_uses_verified_otp_and_revokes_refresh_tokens(
     client: AsyncClient,
     email_sender: InMemoryEmailSender,
 ) -> None:
@@ -89,8 +198,11 @@ async def test_password_reset_revokes_existing_refresh_tokens(
             "password": "CorrectHorseBattery9",
         },
     )
-    verification_token = email_sender.verification_messages[0][1]
-    await client.post("/api/v1/auth/verify-email", json={"token": verification_token})
+    verification_otp = email_sender.verification_otps[0][1]
+    await client.post(
+        "/api/v1/auth/verify-email",
+        json={"email": "reset@example.com", "otp": verification_otp},
+    )
 
     login = await client.post(
         "/api/v1/auth/login",
@@ -100,13 +212,51 @@ async def test_password_reset_revokes_existing_refresh_tokens(
 
     forgot = await client.post("/api/v1/auth/forgot-password", json={"email": "reset@example.com"})
     assert forgot.status_code == 202
-    reset_token = email_sender.reset_messages[0][1]
+    assert len(email_sender.password_reset_otps) == 1
+    reset_otp = email_sender.password_reset_otps[0][1]
+    assert_six_digit_otp(reset_otp)
+
+    cooldown_resend = await client.post(
+        "/api/v1/auth/forgot-password", json={"email": "reset@example.com"}
+    )
+    assert cooldown_resend.status_code == 202
+    assert len(email_sender.password_reset_otps) == 1
+
+    reset_without_verification = await client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "email": "reset@example.com",
+            "otp": reset_otp,
+            "new_password": "NewCorrectHorseBattery9",
+        },
+    )
+    assert reset_without_verification.status_code == 400
+
+    verification = await client.post(
+        "/api/v1/auth/verify-password-reset-otp",
+        json={"email": "reset@example.com", "otp": reset_otp},
+    )
+    assert verification.status_code == 200
 
     reset = await client.post(
         "/api/v1/auth/reset-password",
-        json={"token": reset_token, "new_password": "NewCorrectHorseBattery9"},
+        json={
+            "email": "reset@example.com",
+            "otp": reset_otp,
+            "new_password": "NewCorrectHorseBattery9",
+        },
     )
     assert reset.status_code == 200
+
+    reused_otp = await client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "email": "reset@example.com",
+            "otp": reset_otp,
+            "new_password": "AnotherCorrectPassword9",
+        },
+    )
+    assert reused_otp.status_code == 400
 
     previous_session = await client.post(
         "/api/v1/auth/refresh", json={"refresh_token": refresh_token}

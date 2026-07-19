@@ -53,8 +53,10 @@ class Settings(BaseSettings):
     email_backend: EmailBackend = EmailBackend.CONSOLE
     aws_region: str | None = None
     ses_from_email: str | None = None
-    email_verification_expire_minutes: int = 60
-    password_reset_expire_minutes: int = 20
+    email_verification_expire_minutes: int = 10
+    password_reset_expire_minutes: int = 10
+    otp_max_attempts: int = 5
+    otp_resend_cooldown_seconds: int = 60
 
     auth_rate_limit_requests: int = 10
     auth_rate_limit_window_seconds: int = 60
@@ -71,6 +73,14 @@ class Settings(BaseSettings):
         secret = self.jwt_secret_key.get_secret_value()
         if len(secret) < 32:
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
+        if self.email_verification_expire_minutes <= 0:
+            raise ValueError("EMAIL_VERIFICATION_EXPIRE_MINUTES must be greater than zero")
+        if self.password_reset_expire_minutes <= 0:
+            raise ValueError("PASSWORD_RESET_EXPIRE_MINUTES must be greater than zero")
+        if self.otp_max_attempts <= 0:
+            raise ValueError("OTP_MAX_ATTEMPTS must be greater than zero")
+        if self.otp_resend_cooldown_seconds < 0:
+            raise ValueError("OTP_RESEND_COOLDOWN_SECONDS cannot be negative")
 
         if self.app_env is AppEnvironment.PRODUCTION:
             if "replace-this" in secret or "change-me" in secret:

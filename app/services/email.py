@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 class EmailSender(Protocol):
-    async def send_verification_email(self, recipient: str, token: str) -> None: ...
+    async def send_verification_otp(self, recipient: str, otp: str) -> None: ...
 
-    async def send_password_reset_email(self, recipient: str, token: str) -> None: ...
+    async def send_password_reset_otp(self, recipient: str, otp: str) -> None: ...
 
 
 class ConsoleEmailSender:
@@ -24,20 +24,20 @@ class ConsoleEmailSender:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    async def send_verification_email(self, recipient: str, token: str) -> None:
-        verification_url = f"{self.settings.frontend_url}/verify-email?token={token}"
+    async def send_verification_otp(self, recipient: str, otp: str) -> None:
         logger.info(
-            "Development verification email for %s. Verification URL: %s",
+            "Development signup-verification OTP for %s: %s. Expires in %s minutes.",
             recipient,
-            verification_url,
+            otp,
+            self.settings.email_verification_expire_minutes,
         )
 
-    async def send_password_reset_email(self, recipient: str, token: str) -> None:
-        password_reset_url = f"{self.settings.frontend_url}/reset-password?token={token}"
+    async def send_password_reset_otp(self, recipient: str, otp: str) -> None:
         logger.info(
-            "Development password reset email for %s. Password-reset URL: %s",
+            "Development password-reset OTP for %s: %s. Expires in %s minutes.",
             recipient,
-            password_reset_url,
+            otp,
+            self.settings.password_reset_expire_minutes,
         )
 
 
@@ -60,28 +60,26 @@ class SesEmailSender:
             },
         )
 
-    async def send_verification_email(self, recipient: str, token: str) -> None:
-        url = f"{self.settings.frontend_url}/verify-email?token={token}"
+    async def send_verification_otp(self, recipient: str, otp: str) -> None:
         await self._send(
             recipient=recipient,
             subject="Verify your Spike Technology account",
             body=(
-                "Welcome to Spike Technology. Verify your email address by opening this link: "
-                f"{url}\n\n"
-                "This link expires in "
+                "Welcome to Spike Technology. Your verification code is: "
+                f"{otp}\n\n"
+                "This code expires in "
                 f"{self.settings.email_verification_expire_minutes} minutes."
             ),
         )
 
-    async def send_password_reset_email(self, recipient: str, token: str) -> None:
-        url = f"{self.settings.frontend_url}/reset-password?token={token}"
+    async def send_password_reset_otp(self, recipient: str, otp: str) -> None:
         await self._send(
             recipient=recipient,
             subject="Reset your Spike Technology password",
             body=(
-                "Reset your password by opening this link: "
-                f"{url}\n\n"
-                "This link expires in "
+                "Your password-reset code is: "
+                f"{otp}\n\n"
+                "This code expires in "
                 f"{self.settings.password_reset_expire_minutes} minutes. "
                 "If you did not request this, you can ignore this email."
             ),

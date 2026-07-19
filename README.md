@@ -116,7 +116,9 @@ docker compose up --build
 
 ## Local development email
 
-`.env.example` uses `EMAIL_BACKEND=console`. Registration and password-reset links are written to the API log, not sent to a real inbox. This makes local testing safe.
+`.env.example` uses `EMAIL_BACKEND=console`. Registration and password-reset **six-digit OTPs** are written to the API log, not sent to a real inbox. This makes local testing safe.
+
+Both OTP flows use the approved policy: a 10-minute expiry, five maximum incorrect attempts, and a 60-second resend cooldown. A resend invalidates the earlier OTP.
 
 For AWS SES, set the following only after you have verified your sending identity in SES:
 
@@ -155,17 +157,47 @@ curl -X POST http://localhost:8000/api/v1/auth/register \
   }'
 ```
 
-With `EMAIL_BACKEND=console`, the API terminal prints a local-development message such as
-`Verification URL: http://localhost:3000/verify-email?token=...`. Copy the opaque value
-after `token=`. This URL is deliberately logged only by the console sender; production uses
-AWS SES and does not write verification tokens to application logs.
+With `EMAIL_BACKEND=console`, the API terminal prints a local-development message such as:
+
+```text
+Development signup-verification OTP for test@example.com: 012345. Expires in 10 minutes.
+```
+
+Copy the six digits exactly, including a leading zero if present. In production, AWS SES sends the OTP instead; it is never written to production application logs.
 
 ### Verify email
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/auth/verify-email \
   -H "Content-Type: application/json" \
-  -d '{"token":"PASTE_THE_TOKEN_HERE"}'
+  -d '{"email":"test@example.com","otp":"PASTE_SIX_DIGIT_OTP_HERE"}'
+```
+
+### Password reset with OTP
+
+Request an OTP (the same endpoint is used by the UI's **Resend OTP** button after the 60-second cooldown):
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/forgot-password \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com"}'
+```
+
+The local API log prints `Development password-reset OTP for test@example.com: 012345...`.
+First verify the OTP, matching the verification-success screen in Figma:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/verify-password-reset-otp \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","otp":"PASTE_SIX_DIGIT_OTP_HERE"}'
+```
+
+Then set the new password with that verified OTP:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/reset-password \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","otp":"PASTE_SIX_DIGIT_OTP_HERE","new_password":"NewCorrectHorseBattery9"}'
 ```
 
 ### Login
@@ -239,8 +271,8 @@ Never pass real production passwords through shell history. In production, use a
 - [ ] `docker compose ps` shows PostgreSQL and Redis healthy.
 - [ ] `alembic upgrade head` succeeds.
 - [ ] `/health/live` and `/health/ready` both return 200.
-- [ ] A new user receives a verification flow (console locally; SES in production).
+- [ ] A new user receives a six-digit signup-verification OTP (console locally; SES in production).
 - [ ] Unverified users cannot sign in.
 - [ ] Verified users can login, refresh, logout, and access `/users/me`.
-- [ ] Password reset revokes existing refresh tokens.
+- [ ] Password reset requires a verified six-digit OTP and revokes existing refresh tokens.
 - [ ] `ruff` and both test suites pass.

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.config import AppEnvironment, Settings
 from app.core.security import (
     TokenType,
     create_jwt_token,
+    create_six_digit_otp,
     decode_jwt_token,
     hash_password,
     verify_password,
 )
+from app.schemas.auth import EmailOTPRequest
 
 
 def make_settings() -> Settings:
@@ -58,3 +62,19 @@ def test_production_rejects_console_email_backend() -> None:
             jwt_secret_key="this-is-a-long-enough-production-test-secret-value",
             email_backend="console",
         )
+
+
+def test_six_digit_otp_preserves_leading_zeroes() -> None:
+    with patch("app.core.security.secrets.randbelow", return_value=42):
+        assert create_six_digit_otp() == "000042"
+
+
+@pytest.mark.parametrize("otp", ["12345", "1234567", "12a456"])
+def test_otp_schema_requires_exactly_six_numeric_digits(otp: str) -> None:
+    with pytest.raises(ValidationError):
+        EmailOTPRequest(email="test@example.com", otp=otp)
+
+
+def test_otp_schema_accepts_leading_zeroes() -> None:
+    payload = EmailOTPRequest(email="test@example.com", otp="012345")
+    assert payload.otp == "012345"

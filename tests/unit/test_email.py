@@ -21,10 +21,10 @@ def make_settings() -> Settings:
 
 
 @pytest.mark.asyncio
-async def test_console_sender_logs_verification_url(caplog: pytest.LogCaptureFixture) -> None:
+async def test_console_sender_logs_verification_otp(caplog: pytest.LogCaptureFixture) -> None:
     sender = ConsoleEmailSender(make_settings())
 
     with caplog.at_level(logging.INFO, logger="app.services.email"):
-        await sender.send_verification_email("test@example.com", "one-time-token")
+        await sender.send_verification_otp("test@example.com", "012345")
 
-    assert "http://localhost:3000/verify-email?token=one-time-token" in caplog.text
+    assert "Development signup-verification OTP for test@example.com: 012345" in caplog.text

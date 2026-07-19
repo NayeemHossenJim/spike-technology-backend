@@ -37,6 +37,7 @@ class DecodedToken:
 
 password_hasher = PasswordHash.recommended()
 dummy_password_hash = password_hasher.hash("not-a-real-password")
+dummy_otp_hash = password_hasher.hash("000000")
 
 
 def utc_now() -> datetime:
@@ -55,6 +56,28 @@ def verify_password_against_dummy(password: str) -> None:
     """Equalize timing for login attempts where an account does not exist."""
 
     password_hasher.verify(password, dummy_password_hash)
+
+
+def create_six_digit_otp() -> str:
+    """Create a cryptographically secure six-digit code and preserve leading zeroes."""
+
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def hash_otp(otp: str) -> str:
+    """Use a salted Argon2 hash because a six-digit OTP has a small keyspace."""
+
+    return password_hasher.hash(otp)
+
+
+def verify_otp(otp: str, otp_hash: str) -> bool:
+    return password_hasher.verify(otp, otp_hash)
+
+
+def verify_otp_against_dummy(otp: str) -> None:
+    """Equalize timing for OTP validation when no active OTP exists."""
+
+    password_hasher.verify(otp, dummy_otp_hash)
 
 
 def create_jwt_token(

@@ -39,15 +39,24 @@ class LogoutRequest(RefreshRequest):
     pass
 
 
-class OpaqueTokenRequest(BaseModel):
-    token: str = Field(min_length=32, max_length=512)
-
-
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
 
-class ResetPasswordRequest(OpaqueTokenRequest):
+class EmailOTPRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class VerifyEmailOTPRequest(EmailOTPRequest):
+    pass
+
+
+class VerifyPasswordResetOTPRequest(EmailOTPRequest):
+    pass
+
+
+class ResetPasswordRequest(EmailOTPRequest):
     new_password: str = Field(min_length=12, max_length=128)
 
     @field_validator("new_password")

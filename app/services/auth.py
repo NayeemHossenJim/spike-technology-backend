@@ -13,15 +13,18 @@ from app.core.config import Settings
 from app.core.security import (
     TokenType,
     create_jwt_token,
-    create_opaque_token,
+    create_six_digit_otp,
     decode_jwt_token,
     hash_opaque_token,
+    hash_otp,
     hash_password,
     utc_now,
+    verify_otp,
+    verify_otp_against_dummy,
     verify_password,
     verify_password_against_dummy,
 )
-from app.models.auth import EmailVerificationToken, PasswordResetToken, RefreshToken
+from app.models.auth import EmailVerificationOTP, PasswordResetOTP, RefreshToken
 from app.models.user import User
 from app.schemas.auth import (
     ForgotPasswordRequest,
@@ -29,6 +32,8 @@ from app.schemas.auth import (
     RegisterRequest,
     ResetPasswordRequest,
     TokenPairResponse,
+    VerifyEmailOTPRequest,
+    VerifyPasswordResetOTPRequest,
 )
 from app.services.email import EmailSender
 
@@ -77,42 +82,96 @@ class AuthService:
         result = await self.session.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
 
-    async def _issue_email_verification_token(self, user: User) -> str:
-        await self.session.execute(
-            update(EmailVerificationToken)
-            .where(
-                EmailVerificationToken.user_id == user.id,
-                EmailVerificationToken.used_at.is_(None),
-            )
-            .values(used_at=utc_now())
+    async def _resend_is_allowed(
+        self,
+        otp_model: type[EmailVerificationOTP] | type[PasswordResetOTP],
+        user_id: UUID,
+    ) -> bool:
+        result = await self.session.execute(
+            select(otp_model.created_at)
+            .where(otp_model.user_id == user_id)
+            .order_by(otp_model.created_at.desc())
+            .limit(1)
         )
-        raw_token = create_opaque_token()
-        token = EmailVerificationToken(
-            user_id=user.id,
-            token_hash=hash_opaque_token(raw_token),
-            expires_at=utc_now()
-            + timedelta(minutes=self.settings.email_verification_expire_minutes),
+        last_sent_at = result.scalar_one_or_none()
+        if last_sent_at is None:
+            return True
+        return utc_now() - last_sent_at >= timedelta(
+            seconds=self.settings.otp_resend_cooldown_seconds
         )
-        self.session.add(token)
-        return raw_token
 
-    async def _issue_password_reset_token(self, user: User) -> str:
+    async def _issue_otp(
+        self,
+        *,
+        user: User,
+        otp_model: type[EmailVerificationOTP] | type[PasswordResetOTP],
+        expires_in_minutes: int,
+        enforce_resend_cooldown: bool,
+    ) -> str | None:
+        if enforce_resend_cooldown and not await self._resend_is_allowed(otp_model, user.id):
+            return None
+
+        now = utc_now()
         await self.session.execute(
-            update(PasswordResetToken)
-            .where(
-                PasswordResetToken.user_id == user.id,
-                PasswordResetToken.used_at.is_(None),
+            update(otp_model)
+            .where(otp_model.user_id == user.id, otp_model.used_at.is_(None))
+            .values(used_at=now)
+        )
+        raw_otp = create_six_digit_otp()
+        self.session.add(
+            otp_model(
+                user_id=user.id,
+                otp_hash=hash_otp(raw_otp),
+                expires_at=now + timedelta(minutes=expires_in_minutes),
             )
-            .values(used_at=utc_now())
         )
-        raw_token = create_opaque_token()
-        token = PasswordResetToken(
-            user_id=user.id,
-            token_hash=hash_opaque_token(raw_token),
-            expires_at=utc_now() + timedelta(minutes=self.settings.password_reset_expire_minutes),
+        return raw_otp
+
+    async def _get_active_otp(
+        self,
+        otp_model: type[EmailVerificationOTP] | type[PasswordResetOTP],
+        user_id: UUID,
+    ) -> EmailVerificationOTP | PasswordResetOTP | None:
+        result = await self.session.execute(
+            select(otp_model)
+            .where(otp_model.user_id == user_id, otp_model.used_at.is_(None))
+            .order_by(otp_model.created_at.desc())
+            .limit(1)
+            .with_for_update()
         )
-        self.session.add(token)
-        return raw_token
+        return result.scalar_one_or_none()
+
+    async def _validate_otp(
+        self,
+        otp_record: EmailVerificationOTP | PasswordResetOTP | None,
+        raw_otp: str,
+    ) -> EmailVerificationOTP | PasswordResetOTP:
+        if otp_record is None:
+            verify_otp_against_dummy(raw_otp)
+            raise TokenValidationError
+
+        now = utc_now()
+        if otp_record.used_at or otp_record.expires_at <= now:
+            if otp_record.used_at is None:
+                otp_record.used_at = now
+                await self.session.commit()
+            verify_otp_against_dummy(raw_otp)
+            raise TokenValidationError
+
+        if otp_record.attempt_count >= self.settings.otp_max_attempts:
+            otp_record.used_at = now
+            await self.session.commit()
+            verify_otp_against_dummy(raw_otp)
+            raise TokenValidationError
+
+        if verify_otp(raw_otp, otp_record.otp_hash):
+            return otp_record
+
+        otp_record.attempt_count += 1
+        if otp_record.attempt_count >= self.settings.otp_max_attempts:
+            otp_record.used_at = now
+        await self.session.commit()
+        raise TokenValidationError
 
     async def register(self, payload: RegisterRequest) -> User:
         existing_user = await self._get_user_by_email(payload.email)
@@ -128,7 +187,12 @@ class AuthService:
         )
         self.session.add(user)
         await self.session.flush()
-        raw_token = await self._issue_email_verification_token(user)
+        raw_otp = await self._issue_otp(
+            user=user,
+            otp_model=EmailVerificationOTP,
+            expires_in_minutes=self.settings.email_verification_expire_minutes,
+            enforce_resend_cooldown=False,
+        )
         try:
             await self.session.commit()
         except IntegrityError as exc:
@@ -136,9 +200,9 @@ class AuthService:
             raise DuplicateEmailError from exc
 
         try:
-            await self.email_sender.send_verification_email(user.email, raw_token)
+            await self.email_sender.send_verification_otp(user.email, raw_otp)
         except Exception:
-            logger.exception("Verification email delivery failed", extra={"user_id": str(user.id)})
+            logger.exception("Verification OTP delivery failed", extra={"user_id": str(user.id)})
 
         await self.session.refresh(user)
         return user
@@ -148,28 +212,30 @@ class AuthService:
         if not user or user.is_verified or not user.is_active:
             return
 
-        raw_token = await self._issue_email_verification_token(user)
+        raw_otp = await self._issue_otp(
+            user=user,
+            otp_model=EmailVerificationOTP,
+            expires_in_minutes=self.settings.email_verification_expire_minutes,
+            enforce_resend_cooldown=True,
+        )
+        if raw_otp is None:
+            return
         await self.session.commit()
         try:
-            await self.email_sender.send_verification_email(user.email, raw_token)
+            await self.email_sender.send_verification_otp(user.email, raw_otp)
         except Exception:
-            logger.exception("Verification email resend failed", extra={"user_id": str(user.id)})
+            logger.exception("Verification OTP resend failed", extra={"user_id": str(user.id)})
 
-    async def verify_email(self, raw_token: str) -> None:
-        token_hash = hash_opaque_token(raw_token)
-        result = await self.session.execute(
-            select(EmailVerificationToken).where(EmailVerificationToken.token_hash == token_hash)
-        )
-        token = result.scalar_one_or_none()
-        if not token or token.used_at or token.expires_at <= utc_now():
+    async def verify_email(self, payload: VerifyEmailOTPRequest) -> None:
+        user = await self._get_user_by_email(str(payload.email))
+        if not user or not user.is_active or user.is_verified:
+            verify_otp_against_dummy(payload.otp)
             raise TokenValidationError
 
-        user = await self._get_user_by_id(token.user_id)
-        if not user or not user.is_active:
-            raise TokenValidationError
-
+        otp_record = await self._get_active_otp(EmailVerificationOTP, user.id)
+        otp_record = await self._validate_otp(otp_record, payload.otp)
         user.is_verified = True
-        token.used_at = utc_now()
+        otp_record.used_at = utc_now()
         await self.session.commit()
 
     async def authenticate(self, payload: LoginRequest) -> User:
@@ -267,30 +333,48 @@ class AuthService:
         user = await self._get_user_by_email(payload.email)
         if not user or not user.is_active or not user.is_verified:
             return
-        raw_token = await self._issue_password_reset_token(user)
+        raw_otp = await self._issue_otp(
+            user=user,
+            otp_model=PasswordResetOTP,
+            expires_in_minutes=self.settings.password_reset_expire_minutes,
+            enforce_resend_cooldown=True,
+        )
+        if raw_otp is None:
+            return
         await self.session.commit()
         try:
-            await self.email_sender.send_password_reset_email(user.email, raw_token)
+            await self.email_sender.send_password_reset_otp(user.email, raw_otp)
         except Exception:
             logger.exception(
-                "Password reset email delivery failed", extra={"user_id": str(user.id)}
+                "Password-reset OTP delivery failed", extra={"user_id": str(user.id)}
             )
 
-    async def reset_password(self, payload: ResetPasswordRequest) -> None:
-        token_hash = hash_opaque_token(payload.token)
-        result = await self.session.execute(
-            select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
-        )
-        reset_token = result.scalar_one_or_none()
-        if not reset_token or reset_token.used_at or reset_token.expires_at <= utc_now():
+    async def verify_password_reset_otp(self, payload: VerifyPasswordResetOTPRequest) -> None:
+        user = await self._get_user_by_email(str(payload.email))
+        if not user or not user.is_active or not user.is_verified:
+            verify_otp_against_dummy(payload.otp)
             raise TokenValidationError
 
-        user = await self._get_user_by_id(reset_token.user_id)
-        if not user or not user.is_active:
+        otp_record = await self._get_active_otp(PasswordResetOTP, user.id)
+        otp_record = await self._validate_otp(otp_record, payload.otp)
+        if not isinstance(otp_record, PasswordResetOTP):
+            raise TokenValidationError
+        otp_record.verified_at = utc_now()
+        await self.session.commit()
+
+    async def reset_password(self, payload: ResetPasswordRequest) -> None:
+        user = await self._get_user_by_email(str(payload.email))
+        if not user or not user.is_active or not user.is_verified:
+            verify_otp_against_dummy(payload.otp)
+            raise TokenValidationError
+
+        reset_otp = await self._get_active_otp(PasswordResetOTP, user.id)
+        reset_otp = await self._validate_otp(reset_otp, payload.otp)
+        if not isinstance(reset_otp, PasswordResetOTP) or not reset_otp.verified_at:
             raise TokenValidationError
 
         user.password_hash = hash_password(payload.new_password)
-        reset_token.used_at = utc_now()
+        reset_otp.used_at = utc_now()
         await self.session.execute(
             update(RefreshToken)
             .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
