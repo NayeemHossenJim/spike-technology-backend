@@ -17,7 +17,9 @@ settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Alembic runs inside the pytest process during integration setup. Preserve
+    # application loggers so later tests and runtime logging remain enabled.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = SQLModel.metadata
 

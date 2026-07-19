@@ -118,7 +118,7 @@ docker compose up --build
 
 `.env.example` uses `EMAIL_BACKEND=console`. Registration and password-reset **six-digit OTPs** are written to the API log, not sent to a real inbox. This makes local testing safe.
 
-Both OTP flows use the approved policy: a 10-minute expiry, five maximum incorrect attempts, and a 60-second resend cooldown. A resend invalidates the earlier OTP.
+Both OTP flows use the approved policy: a 10-minute expiry, five maximum incorrect attempts, and a 60-second resend cooldown. A resend invalidates the earlier OTP. OTP replacement is serialized per user, so simultaneous resend requests cannot bypass the cooldown and create multiple active codes.
 
 For AWS SES, set the following only after you have verified your sending identity in SES:
 
@@ -153,9 +153,13 @@ curl -X POST http://localhost:8000/api/v1/auth/register \
   -d '{
     "full_name": "Test User",
     "email": "test@example.com",
-    "password": "CorrectHorseBattery9"
+    "password": "CorrectHorseBattery9",
+    "industry": "Technology",
+    "job_role": "Engineer / Developer"
   }'
 ```
+
+`industry` and `job_role` accept only the values shown in the Figma dropdowns. Registration records the configured `TERMS_VERSION` and the UTC acceptance time. The canonical field is `job_role`; `job_title` is accepted temporarily as a compatibility alias for Phase 1 clients.
 
 With `EMAIL_BACKEND=console`, the API terminal prints a local-development message such as:
 
@@ -205,17 +209,40 @@ curl -X POST http://localhost:8000/api/v1/auth/reset-password \
 ```bash
 curl -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"CorrectHorseBattery9"}'
+  -c cookies.txt \
+  -d '{"email":"test@example.com","password":"CorrectHorseBattery9","remember_me":true}'
 ```
 
-Save `access_token` and call:
+The JSON response contains the short-lived access token. The rotating refresh token is deliberately **not** returned to browser JavaScript; it is stored in an `HttpOnly`, `SameSite=Lax` cookie scoped to `/api/v1/auth`.
+
+- `remember_me: false` (the default) creates a browser-session cookie that is removed when the browser closes.
+- `remember_me: true` creates a cookie lasting 30 days, matching `REFRESH_TOKEN_EXPIRE_DAYS`.
+- Production cookies also use the `Secure` flag. Local development omits it so plain `http://localhost` works.
+
+Save `access_token` from the response and call:
 
 ```bash
 curl http://localhost:8000/api/v1/users/me \
   -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
 ```
 
-Use `/auth/refresh` with the returned `refresh_token` to rotate tokens, and `/auth/logout` to revoke the refresh token.
+Rotate the refresh token and receive a new access token. There is no JSON request body:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/refresh \
+  -b cookies.txt \
+  -c cookies.txt
+```
+
+Log out, revoke the server-side refresh token, and delete the cookie:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/logout \
+  -b cookies.txt \
+  -c cookies.txt
+```
+
+Clients built against the earlier Phase 1 JSON refresh-token request must sign in again after this update so the server can set the secure cookie.
 
 ## Testing
 
@@ -246,7 +273,35 @@ $env:TEST_DATABASE_URL="postgresql+asyncpg://spike:spike_local_password@localhos
 uv run pytest tests/integration -q
 ```
 
-The integration suite recreates tables only in `spike_test`; it never uses the development `spike` database.
+The test harness always replaces `DATABASE_URL` with `TEST_DATABASE_URL`, refuses to start unless the parsed database name ends in `_test`, and applies the real Alembic chain before the tests. This prevents the destructive setup/cleanup from touching the development `spike` database.
+
+The clean Phase 1 release currently contains one Alembic head, `0003_phase1_hardening`, and 47 tests: 35 unit tests plus 12 PostgreSQL/Redis integration tests.
+
+### If Alembic reports multiple heads
+
+Run:
+
+```bash
+uv run alembic heads --verbose
+```
+
+This release must report only `0003_phase1_hardening`. A second revision means an older or locally generated migration file remained in `alembic/versions`, commonly after extracting a release over an existing directory. Do **not** run `alembic upgrade heads`, delete the file, or create a merge migration until the extra migration's contents and `down_revision` have been reviewed. A safe alternative is to extract this release into a new directory and copy only your `.env` file into it.
+
+### Celery/Redis delivery smoke test
+
+With the Compose stack running, first verify that the worker answers through Redis:
+
+```bash
+docker compose exec worker celery -A app.workers.celery_app:celery_app inspect ping
+```
+
+Then enqueue the Phase 1 smoke task from the API container and wait for its Redis-backed result:
+
+```bash
+docker compose exec api python -c "from app.workers.tasks import ping; print(ping.delay().get(timeout=10))"
+```
+
+The result must contain `{'status': 'ok', ...}`. The unit test uses eager execution only; these two commands verify the actual broker and worker connection.
 
 ## Operational commands
 
@@ -272,7 +327,10 @@ Never pass real production passwords through shell history. In production, use a
 - [ ] `alembic upgrade head` succeeds.
 - [ ] `/health/live` and `/health/ready` both return 200.
 - [ ] A new user receives a six-digit signup-verification OTP (console locally; SES in production).
+- [ ] Signup rejects values outside the Figma Industry and Your Role lists and records the Terms version/time.
 - [ ] Unverified users cannot sign in.
-- [ ] Verified users can login, refresh, logout, and access `/users/me`.
+- [ ] Verified users can login, refresh, logout, and access `/users/me`; the refresh token never appears in JSON.
+- [ ] Unchecked Remember Me uses a session cookie; checked uses a persistent 30-day cookie.
 - [ ] Password reset requires a verified six-digit OTP and revokes existing refresh tokens.
+- [ ] The worker responds to `inspect ping` and completes the queued `spike.system.ping` task.
 - [ ] `ruff` and both test suites pass.

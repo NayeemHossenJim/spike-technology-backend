@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -15,22 +21,40 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlmodel import SQLModel
 
+from alembic import command
+
+
+def validate_test_database_url(database_url: str) -> str:
+    """Refuse destructive test setup unless the database name is explicitly test-only."""
+
+    database_name = make_url(database_url).database
+    if not database_name or not database_name.lower().endswith("_test"):
+        raise RuntimeError(
+            "Integration tests require a database whose name ends with '_test'; "
+            f"received {database_name!r}."
+        )
+    return database_url
+
+
 # Must be configured before importing the application modules, which load Settings at import time.
-os.environ.setdefault("APP_ENV", "test")
-os.environ.setdefault(
-    "DATABASE_URL",
+os.environ["APP_ENV"] = "test"
+os.environ["DATABASE_URL"] = validate_test_database_url(
     os.getenv(
         "TEST_DATABASE_URL",
         "postgresql+asyncpg://spike:spike_local_password@localhost:5432/spike_test",
-    ),
+    )
 )
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379/15")
-os.environ.setdefault("CELERY_BROKER_URL", "redis://localhost:6379/15")
-os.environ.setdefault("CELERY_RESULT_BACKEND", "redis://localhost:6379/14")
-os.environ.setdefault("JWT_SECRET_KEY", "test-only-secret-with-at-least-thirty-two-characters")
-os.environ.setdefault("EMAIL_BACKEND", "console")
-os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
-os.environ.setdefault("TRUSTED_HOSTS", "localhost,127.0.0.1,testserver")
+test_redis_url = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
+os.environ["REDIS_URL"] = test_redis_url
+os.environ["CELERY_BROKER_URL"] = test_redis_url
+os.environ["CELERY_RESULT_BACKEND"] = os.getenv(
+    "TEST_CELERY_RESULT_BACKEND",
+    "redis://localhost:6379/14",
+)
+os.environ["JWT_SECRET_KEY"] = "test-only-secret-with-at-least-thirty-two-characters"
+os.environ["EMAIL_BACKEND"] = "console"
+os.environ["CORS_ORIGINS"] = "http://localhost:3000"
+os.environ["TRUSTED_HOSTS"] = "localhost,127.0.0.1,testserver"
 
 import app.models  # noqa: E402,F401
 from app.api.deps import enforce_auth_rate_limit_dependency  # noqa: E402
@@ -63,15 +87,35 @@ async def test_engine() -> AsyncGenerator[AsyncEngine, None]:
             "Set RUN_INTEGRATION_TESTS=1 with PostgreSQL and Redis running "
             "to execute integration tests."
         )
-    engine = create_async_engine(os.environ["DATABASE_URL"], pool_pre_ping=True)
-    async with engine.begin() as connection:
-        await connection.run_sync(SQLModel.metadata.drop_all)
-        await connection.run_sync(SQLModel.metadata.create_all)
+    project_root = Path(__file__).resolve().parents[1]
+    alembic_config = Config(str(project_root / "alembic.ini"))
+    alembic_config.set_main_option("script_location", str(project_root / "alembic"))
+    migration_heads = ScriptDirectory.from_config(alembic_config).get_heads()
+    if len(migration_heads) != 1:
+        pytest.fail(
+            "The Alembic migration graph must have exactly one head before test setup; "
+            f"found: {', '.join(migration_heads)}. Resolve the migration branch before "
+            "running integration tests. No test-database tables were dropped."
+        )
+
+    database_url = validate_test_database_url(os.environ["DATABASE_URL"])
+    bootstrap_engine = create_async_engine(database_url, pool_pre_ping=True)
+    try:
+        async with bootstrap_engine.begin() as connection:
+            await connection.run_sync(SQLModel.metadata.drop_all)
+            await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    finally:
+        await bootstrap_engine.dispose()
+
+    await asyncio.to_thread(command.upgrade, alembic_config, "head")
+
+    engine = create_async_engine(database_url, pool_pre_ping=True)
     try:
         yield engine
     finally:
         async with engine.begin() as connection:
             await connection.run_sync(SQLModel.metadata.drop_all)
+            await connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
         await engine.dispose()
 
 

@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     password_reset_expire_minutes: int = 10
     otp_max_attempts: int = 5
     otp_resend_cooldown_seconds: int = 60
+    terms_version: str = "v1"
 
     auth_rate_limit_requests: int = 10
     auth_rate_limit_window_seconds: int = 60
@@ -81,6 +82,9 @@ class Settings(BaseSettings):
             raise ValueError("OTP_MAX_ATTEMPTS must be greater than zero")
         if self.otp_resend_cooldown_seconds < 0:
             raise ValueError("OTP_RESEND_COOLDOWN_SECONDS cannot be negative")
+        self.terms_version = self.terms_version.strip()
+        if not self.terms_version:
+            raise ValueError("TERMS_VERSION cannot be empty")
 
         if self.app_env is AppEnvironment.PRODUCTION:
             if "replace-this" in secret or "change-me" in secret:

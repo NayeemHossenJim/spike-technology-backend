@@ -1,49 +1,50 @@
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from app.models.user import UserRole
+from app.core.password_policy import validate_password_strength
+from app.models.user import Industry, JobRole, UserRole
 
 
-class RegisterRequest(BaseModel):
+class AuthRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class RegisterRequest(AuthRequest):
     full_name: str = Field(min_length=2, max_length=120)
     email: EmailStr
     password: str = Field(min_length=12, max_length=128)
-    industry: str | None = Field(default=None, max_length=120)
-    job_title: str | None = Field(default=None, max_length=120)
+    industry: Industry | None = None
+    job_role: JobRole | None = Field(
+        default=None,
+        validation_alias=AliasChoices("job_role", "job_title"),
+    )
+
+    @field_validator("full_name", mode="before")
+    @classmethod
+    def strip_full_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("password")
     @classmethod
-    def validate_password_strength(cls, value: str) -> str:
-        if not any(char.islower() for char in value):
-            raise ValueError("Password must include a lowercase letter")
-        if not any(char.isupper() for char in value):
-            raise ValueError("Password must include an uppercase letter")
-        if not any(char.isdigit() for char in value):
-            raise ValueError("Password must include a number")
-        return value
+    def validate_registration_password(cls, value: str) -> str:
+        return validate_password_strength(value)
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(AuthRequest):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+    remember_me: bool = False
 
 
-class RefreshRequest(BaseModel):
-    refresh_token: str = Field(min_length=1)
-
-
-class LogoutRequest(RefreshRequest):
-    pass
-
-
-class ForgotPasswordRequest(BaseModel):
+class ForgotPasswordRequest(AuthRequest):
     email: EmailStr
 
 
-class EmailOTPRequest(BaseModel):
+class EmailOTPRequest(AuthRequest):
     email: EmailStr
     otp: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 
@@ -62,7 +63,7 @@ class ResetPasswordRequest(EmailOTPRequest):
     @field_validator("new_password")
     @classmethod
     def validate_new_password_strength(cls, value: str) -> str:
-        return RegisterRequest.validate_password_strength(value)
+        return validate_password_strength(value)
 
 
 class UserRead(BaseModel):
@@ -72,16 +73,15 @@ class UserRead(BaseModel):
     email: EmailStr
     full_name: str
     role: UserRole
-    industry: str | None
-    job_title: str | None
+    industry: Industry | None
+    job_role: JobRole | None
     is_active: bool
     is_verified: bool
 
 
-class TokenPairResponse(BaseModel):
+class AccessTokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
+    token_type: Literal["bearer"] = "bearer"
     access_token_expires_in: int
 
 

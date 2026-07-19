@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Column, DateTime, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlmodel import Field
 
 from app.models.base import TimestampedModel, UUIDPrimaryKey
@@ -16,6 +16,10 @@ class RefreshToken(UUIDPrimaryKey, TimestampedModel, table=True):
     token_id: UUID = Field(index=True, unique=True)
     token_hash: str = Field(sa_column=Column(String(64), nullable=False))
     expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    is_persistent: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default="false"),
+    )
     revoked_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
