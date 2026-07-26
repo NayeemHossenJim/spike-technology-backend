@@ -27,3 +27,14 @@ class TimestampedModel(SQLModel):
         sa_type=DateTime(timezone=True),
         sa_column_kwargs={"onupdate": utc_now},
     )
+
+
+class TenantOwnedModel(SQLModel):
+    """Mixin for records that must always be constrained to one business."""
+
+    business_id: UUID = Field(
+        foreign_key="businesses.id",
+        ondelete="CASCADE",
+        nullable=False,
+        index=True,
+    )

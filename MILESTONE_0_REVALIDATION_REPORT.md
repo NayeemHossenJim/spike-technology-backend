@@ -7,16 +7,16 @@
 
 ## Result
 
-**Conditional pass.**
+**Pass. Milestone 0 is complete.**
 
 The source, lockfile, linting, packaging, migration chain, authentication behavior,
 PostgreSQL/Redis integration suite, Celery task delivery, and dependency audit all passed
 locally. Two defects found during revalidation were corrected and covered by tests.
 
-The only remaining sign-off gate is a run with the repository's exact Docker Compose
-images: PostgreSQL 16, Redis 7, the API container, and the worker container. Docker is not
-installed in the revalidation workspace, so Milestone 0 must not be marked fully complete
-until the Docker-native commands in this report pass.
+The repository's exact Docker Compose gate was subsequently run by the user on
+2026-07-26. PostgreSQL 16 and Redis 7 were healthy, the API and worker remained running,
+all 48 tests passed, both health checks returned `status: ok`, Celery inspection returned
+`pong`, and the queued smoke task returned `status: ok`.
 
 ## Validation evidence
 
@@ -37,7 +37,7 @@ until the Docker-native commands in this report pass.
 | Python package build | Pass | Source distribution and wheel built successfully |
 | Dependency vulnerability audit | Pass | No known vulnerabilities after lockfile update |
 | Compose definition review | Pass | `api`, `worker`, `postgres`, and `redis`; PostgreSQL 16 and Redis 7 configured |
-| Exact Docker Compose runtime | Pending | Docker unavailable in this workspace |
+| Exact Docker Compose runtime | Pass | User-supplied Windows/Docker run completed every final gate |
 
 The local integration substitute was PGlite's PostgreSQL-compatible wire server plus
 Redis 6.2.14. It exercised the real asyncpg, SQLAlchemy, Alembic, Redis, and application
@@ -92,7 +92,7 @@ follow-up dependency audit found no known vulnerabilities.
 
 No Phase 2 or Phase 3 functionality was added.
 
-## Final Docker-native gate
+## Docker-native validation commands
 
 Run this from a fresh extraction on a machine with Docker Desktop and `uv`. Use the
 isolated Compose project name exactly as shown so the validation receives new volumes.
@@ -149,7 +149,7 @@ isolated Compose project name exactly as shown so the validation receives new vo
 
 ## Final completion rule
 
-Milestone 0 is complete only when the Docker-native run shows:
+Milestone 0 required the Docker-native run to show:
 
 - PostgreSQL and Redis healthy.
 - API and worker running.
@@ -158,5 +158,5 @@ Milestone 0 is complete only when the Docker-native run shows:
 - Both health endpoints returning `{"status":"ok"}`.
 - Celery inspection responding and the queued task returning `{"status":"ok", ...}`.
 
-After that evidence is recorded, development can move to Milestone 1 without carrying
-an unverified Phase 1 foundation forward.
+All conditions were met on 2026-07-26. Development may proceed from this verified
+baseline without carrying an unverified Phase 1 foundation forward.

@@ -2,23 +2,29 @@
 
 Production-oriented FastAPI backend for the confirmed Spike Technology v1 scope.
 
-## Delivery plan
+## Delivery status
 
-| Phase | Scope | Completion result |
+| Milestone | Scope | Status |
 | --- | --- | --- |
-| **1 — Foundation (this codebase)** | FastAPI structure, PostgreSQL/asyncpg, Alembic, Celery/Redis wiring, JWT auth, email verification, password reset, SES adapter, RBAC primitives, security middleware, health checks, tests | A secure user can register, verify email, sign in, refresh/logout, reset password, and call `/users/me`. |
-| **2 — Financial-data and AI workflow** | S3 presigned POST uploads, file validation (five files; 25 MB per file), pandas/Excel ingestion, header mapping, business onboarding, Celery job state, Gemini runs, 15-credit ledger, three dashboard types | Users can upload supported data, map it, generate an authorized insight/dashboard, and see job progress. |
-| **3 — Commercial and operations** | Stripe checkout/trial/webhooks, plan and quota enforcement, billing history, customer-service/account-only access, super-admin operations, PDF export through WeasyPrint, audit/activity records | The paid product, admin workflows, billing, and PDFs are complete. |
+| **0 — Phase 1 revalidation** | Authentication, OTPs, secure refresh sessions, PostgreSQL/Redis/Celery, migrations, and tests | Complete |
+| **1 — Business and subscription foundation** | Business onboarding, owner assignment, plan/subscription records, entitlement checks, and tenant isolation | Complete in this release |
+| **2 — Stripe billing** | Checkout, signed/idempotent webhooks, paid subscription lifecycle, and billing history | Next |
+| **3+ — Product workflow** | S3 uploads, file processing, Gemini, atomic credit ledger, dashboards, PDF, and admin operations | Pending |
 
-Phase 1 deliberately does **not** expose uploads, AI, Stripe, or dashboards. Those endpoints are Phase 2/3 work, so no unapproved behavior is invented.
+This release deliberately does **not** expose uploads, Gemini calls, Stripe checkout,
+dashboard creation, or PDF export.
 
-## Phase 1 architecture
+## Current architecture
 
 ```text
 FastAPI API ── asyncpg/SQLModel ── PostgreSQL
      │
      ├── Redis ── Celery worker (smoke task now; jobs in Phase 2)
      └── AWS SES via Boto3 + Asyncer (console sender in local development)
+
+Authenticated user ── active RoleAssignment ── one Business
+                                           └── current Subscription
+                                                └── fail-closed Entitlements
 ```
 
 The stack is fixed as follows: FastAPI, SQLModel, asyncpg, PostgreSQL, Alembic, Asyncer, Celery + Redis, Boto3, AWS SES, direct Gemini API via `google-genai` (Phase 2), pandas + `openpyxl` + `xlrd` (Phase 2), and WeasyPrint (Phase 3).
@@ -29,8 +35,6 @@ The stack is fixed as follows: FastAPI, SQLModel, asyncpg, PostgreSQL, Alembic, 
 - [uv](https://docs.astral.sh/uv/) package manager
 - Docker Desktop (for local PostgreSQL and Redis)
 - An AWS account, verified SES identity, and AWS credentials only when moving from local development to real email delivery
-
-Docker is not available in the current coding workspace, so the integration-test commands below are included and ready to run on your computer, but must be run where Docker Desktop is installed.
 
 ## First-time installation
 
@@ -62,10 +66,10 @@ uv run python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 Copy the generated value into `JWT_SECRET_KEY` in `.env`. Never commit `.env`.
 
-### 4. Install Phase 1 packages
+### 4. Install the locked development packages
 
 ```bash
-uv sync --extra dev
+uv sync --frozen --extra dev
 ```
 
 Phase 2 packages will be installed later with `uv sync --extra dev --extra phase2`. Phase 3 adds `--extra phase3`.
@@ -244,6 +248,61 @@ curl -X POST http://localhost:8000/api/v1/auth/logout \
 
 Clients built against the earlier Phase 1 JSON refresh-token request must sign in again after this update so the server can set the secure cookie.
 
+## Milestone 1 business flow
+
+All tenant endpoints derive `business_id` from the authenticated user's active owner
+assignment. A client cannot choose a tenant ID during onboarding.
+
+### List public plans
+
+```bash
+curl http://localhost:8000/api/v1/plans
+```
+
+The migration seeds the three confirmed plans:
+
+- Premium — `$59.99/month`
+- Pro Plan — `$99.99/month`
+- Enterprise — custom price
+
+Every paid plan has the confirmed 15 full AI responses per billing period. Premium has
+the confirmed 20-dashboard limit. Dashboard limits that were not approved for Pro,
+Enterprise, or the standalone trial are intentionally absent and therefore fail closed.
+
+### Onboard the authenticated user's business
+
+```bash
+curl -X POST http://localhost:8000/api/v1/businesses \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Analytics","industry":"Technology"}'
+```
+
+This one transaction creates:
+
+- the user's single business;
+- its active `owner` role assignment;
+- a standalone 14-day trial subscription; and
+- a 15-response trial entitlement.
+
+Repeated or concurrent onboarding cannot create a second tenant.
+
+### Read the current tenant state
+
+```bash
+curl http://localhost:8000/api/v1/businesses/me \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+
+curl http://localhost:8000/api/v1/subscriptions/me \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+
+curl http://localhost:8000/api/v1/entitlements/me \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+```
+
+Cross-tenant subscription IDs return the same `404` response as unknown IDs. Tenant
+foreign keys and unique indexes also enforce the boundary inside PostgreSQL.
+
 ## Testing
 
 ### Fast checks, no Docker required
@@ -275,7 +334,8 @@ uv run pytest tests/integration -q
 
 The test harness always replaces `DATABASE_URL` with `TEST_DATABASE_URL`, refuses to start unless the parsed database name ends in `_test`, and applies the real Alembic chain before the tests. This prevents the destructive setup/cleanup from touching the development `spike` database.
 
-The clean Phase 1 release currently contains one Alembic head, `0003_phase1_hardening`, and 48 tests: 36 unit tests plus 12 PostgreSQL/Redis integration tests.
+This release contains one Alembic head, `0004_m1_foundation`, and 69 tests:
+50 unit tests plus 19 PostgreSQL/Redis integration tests.
 
 ### If Alembic reports multiple heads
 
@@ -285,7 +345,12 @@ Run:
 uv run alembic heads --verbose
 ```
 
-This release must report only `0003_phase1_hardening`. A second revision means an older or locally generated migration file remained in `alembic/versions`, commonly after extracting a release over an existing directory. Do **not** run `alembic upgrade heads`, delete the file, or create a merge migration until the extra migration's contents and `down_revision` have been reviewed. A safe alternative is to extract this release into a new directory and copy only your `.env` file into it.
+This release must report only `0004_m1_foundation`. A second revision means an older or
+locally generated migration file remained in `alembic/versions`, commonly after
+extracting a release over an existing directory. Do **not** run `alembic upgrade heads`,
+delete the file, or create a merge migration until the extra migration's contents and
+`down_revision` have been reviewed. A safe alternative is to extract this release into a
+new directory and copy only your `.env` file into it.
 
 ### Celery/Redis delivery smoke test
 
@@ -321,7 +386,7 @@ uv run python -m app.scripts.create_super_admin \
 
 Never pass real production passwords through shell history. In production, use a one-time secure operational process or a secret manager.
 
-## Phase 1 acceptance checklist
+## Milestone 1 acceptance checklist
 
 - [ ] `docker compose ps` shows PostgreSQL and Redis healthy.
 - [ ] `alembic upgrade head` succeeds.
@@ -332,5 +397,13 @@ Never pass real production passwords through shell history. In production, use a
 - [ ] Verified users can login, refresh, logout, and access `/users/me`; the refresh token never appears in JSON.
 - [ ] Unchecked Remember Me uses a session cookie; checked uses a persistent 30-day cookie.
 - [ ] Password reset requires a verified six-digit OTP and revokes existing refresh tokens.
+- [ ] `GET /plans` returns Premium, Pro Plan, and Enterprise with confirmed values only.
+- [ ] Onboarding creates one business, one owner assignment, one 14-day trial, and one
+      15-response trial entitlement.
+- [ ] Repeated and simultaneous onboarding cannot create a second business.
+- [ ] `/businesses/me`, `/subscriptions/me`, and `/entitlements/me` derive tenancy from
+      the access token and active role assignment.
+- [ ] A user requesting another tenant's subscription ID receives `404`.
+- [ ] PostgreSQL rejects mismatched tenant foreign keys and a second live subscription.
 - [ ] The worker responds to `inspect ping` and completes the queued `spike.system.ping` task.
 - [ ] `ruff` and both test suites pass.
