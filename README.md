@@ -7,12 +7,12 @@ Production-oriented FastAPI backend for the confirmed Spike Technology v1 scope.
 | Milestone | Scope | Status |
 | --- | --- | --- |
 | **0 — Phase 1 revalidation** | Authentication, OTPs, secure refresh sessions, PostgreSQL/Redis/Celery, migrations, and tests | Complete |
-| **1 — Business and subscription foundation** | Business onboarding, owner assignment, plan/subscription records, entitlement checks, and tenant isolation | Complete in this release |
-| **2 — Stripe billing** | Checkout, signed/idempotent webhooks, paid subscription lifecycle, and billing history | Next |
+| **1 — Business and subscription foundation** | Business onboarding, owner assignment, plan/subscription records, entitlement checks, and tenant isolation | Complete |
+| **2 — Stripe billing** | Checkout, signed/idempotent webhooks, renewals, cancellation scheduling, billing history, and entitlement synchronization | Complete in this release |
 | **3+ — Product workflow** | S3 uploads, file processing, Gemini, atomic credit ledger, dashboards, PDF, and admin operations | Pending |
 
-This release deliberately does **not** expose uploads, Gemini calls, Stripe checkout,
-dashboard creation, or PDF export.
+This release deliberately does **not** expose uploads, Gemini calls, dashboard creation,
+or PDF export.
 
 ## Current architecture
 
@@ -20,6 +20,7 @@ dashboard creation, or PDF export.
 FastAPI API ── asyncpg/SQLModel ── PostgreSQL
      │
      ├── Redis ── Celery worker (smoke task now; jobs in Phase 2)
+     ├── Stripe Checkout + signed webhooks ── local billing mirror
      └── AWS SES via Boto3 + Asyncer (console sender in local development)
 
 Authenticated user ── active RoleAssignment ── one Business
@@ -27,13 +28,17 @@ Authenticated user ── active RoleAssignment ── one Business
                                                 └── fail-closed Entitlements
 ```
 
-The stack is fixed as follows: FastAPI, SQLModel, asyncpg, PostgreSQL, Alembic, Asyncer, Celery + Redis, Boto3, AWS SES, direct Gemini API via `google-genai` (Phase 2), pandas + `openpyxl` + `xlrd` (Phase 2), and WeasyPrint (Phase 3).
+The stack is fixed as follows: FastAPI, SQLModel, asyncpg, PostgreSQL, Alembic,
+Asyncer, Celery + Redis, Stripe, Boto3, AWS SES, direct Gemini API via
+`google-genai` (later milestone), pandas + `openpyxl` + `xlrd` (later milestone),
+and WeasyPrint (later milestone).
 
 ## Prerequisites
 
 - Python **3.12**
 - [uv](https://docs.astral.sh/uv/) package manager
 - Docker Desktop (for local PostgreSQL and Redis)
+- A Stripe sandbox account and Stripe CLI for live Checkout/webhook testing
 - An AWS account, verified SES identity, and AWS credentials only when moving from local development to real email delivery
 
 ## First-time installation
@@ -72,7 +77,8 @@ Copy the generated value into `JWT_SECRET_KEY` in `.env`. Never commit `.env`.
 uv sync --frozen --extra dev
 ```
 
-Phase 2 packages will be installed later with `uv sync --extra dev --extra phase2`. Phase 3 adds `--extra phase3`.
+Later data-processing packages are installed with `uv sync --extra dev --extra phase2`.
+PDF support adds `--extra phase3`.
 
 ### 5. Start PostgreSQL and Redis
 
@@ -303,6 +309,133 @@ curl http://localhost:8000/api/v1/entitlements/me \
 Cross-tenant subscription IDs return the same `404` response as unknown IDs. Tenant
 foreign keys and unique indexes also enforce the boundary inside PostgreSQL.
 
+## Milestone 2 Stripe billing
+
+Stripe is disabled by default, so Phase 1/Milestone 1 development still works without
+Stripe credentials. Billing routes return `503` until all required sandbox values are
+configured.
+
+### Configure the Stripe sandbox
+
+Create two monthly recurring Prices in Stripe:
+
+- Premium — USD 59.99/month
+- Pro Plan — USD 99.99/month
+
+Enterprise remains sales-assisted and cannot be submitted to self-service Checkout.
+Then set:
+
+```dotenv
+STRIPE_ENABLED=true
+STRIPE_SECRET_KEY=sk_test_REPLACE_ME
+STRIPE_WEBHOOK_SECRET=whsec_REPLACE_ME
+STRIPE_PREMIUM_MONTHLY_PRICE_ID=price_REPLACE_ME
+STRIPE_PRO_MONTHLY_PRICE_ID=price_REPLACE_ME
+STRIPE_CHECKOUT_SUCCESS_URL=http://localhost:3000/billing/success?session_id={CHECKOUT_SESSION_ID}
+STRIPE_CHECKOUT_CANCEL_URL=http://localhost:3000/billing/cancel
+STRIPE_CHECKOUT_SESSION_MINUTES=60
+STRIPE_WEBHOOK_TOLERANCE_SECONDS=300
+```
+
+The application refuses live Stripe secret keys outside production, test keys in
+production, duplicate Premium/Pro Price IDs, malformed Price IDs, missing webhook
+secrets, unsafe production callback URLs, and incomplete Stripe configuration. Before
+creating Checkout, it also retrieves the configured Stripe Price and requires the exact
+approved amount/currency, an active fixed monthly recurring Price, and licensed rather
+than metered usage.
+
+### Trial and Checkout behavior
+
+Business onboarding remains the only action that starts the approved 14-day trial.
+Checkout never starts a second trial. When enough time remains, the local trial end is
+copied to Stripe as an absolute timestamp. Stripe requires that timestamp to be at least
+48 hours away, so Checkout charges immediately when less than the safe 49-hour boundary
+remains.
+
+Create a Checkout Session with a unique client-generated idempotency key:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/billing/checkout-sessions \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Idempotency-Key: PASTE_A_NEW_UUID_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"plan_code":"premium"}'
+```
+
+The client may submit only `plan_code`. Business ID, local subscription ID, Stripe
+Customer, Stripe Price, trial dates, and entitlements are server-derived. Retrying with
+the same key returns the same local Checkout operation. A second open Checkout is
+rejected to prevent duplicate paid subscriptions. Pending operations receive a bounded
+expiry before the Stripe request, so an interrupted network call cannot lock the tenant
+out of Checkout indefinitely.
+
+A Checkout redirect does not activate access. Only a verified Stripe subscription
+snapshot received through the webhook endpoint can attach the paid Plan and synchronize
+entitlements.
+
+### Forward signed webhooks locally
+
+```bash
+stripe listen \
+  --forward-to http://localhost:8000/api/v1/billing/webhooks/stripe
+```
+
+Copy the CLI's `whsec_...` value into `STRIPE_WEBHOOK_SECRET`, restart the API, and
+subscribe the deployed endpoint to:
+
+- `checkout.session.completed`
+- `checkout.session.async_payment_succeeded`
+- `checkout.session.expired`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+- `customer.subscription.paused`
+- `customer.subscription.resumed`
+- `invoice.created`
+- `invoice.updated`
+- `invoice.finalized`
+- `invoice.paid`
+- `invoice.payment_failed`
+- `invoice.payment_action_required`
+- `invoice.voided`
+- `invoice.marked_uncollectible`
+
+The webhook handler verifies the signature against the exact raw request bytes, enforces
+test/live environment separation, stores no raw payment payload, deduplicates Stripe
+Event IDs transactionally, tolerates out-of-order delivery, and rejects cross-tenant
+metadata. A Stripe subscription with an unknown Price or status is fail-closed rather
+than retaining its previous entitlements.
+
+### Subscription lifecycle and billing history
+
+Schedule cancellation at the end of the already-paid period:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/billing/subscription/cancel \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+```
+
+Undo a scheduled end-of-period cancellation before Stripe ends the subscription:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/billing/subscription/resume \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+```
+
+Immediate cancellation/refund behavior is intentionally absent because no refund or
+proration policy has been approved. Renewal and payment-failure states arrive through
+webhooks.
+
+Read the tenant-scoped local invoice mirror:
+
+```bash
+curl "http://localhost:8000/api/v1/billing/history?limit=20&offset=0" \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+```
+
+Only the owner can access Checkout, lifecycle, and billing-history routes. Hosted invoice
+and PDF URLs are never returned across tenant boundaries.
+
 ## Testing
 
 ### Fast checks, no Docker required
@@ -334,8 +467,8 @@ uv run pytest tests/integration -q
 
 The test harness always replaces `DATABASE_URL` with `TEST_DATABASE_URL`, refuses to start unless the parsed database name ends in `_test`, and applies the real Alembic chain before the tests. This prevents the destructive setup/cleanup from touching the development `spike` database.
 
-This release contains one Alembic head, `0004_m1_foundation`, and 69 tests:
-50 unit tests plus 19 PostgreSQL/Redis integration tests.
+This release contains one Alembic head, `0005_m2_stripe_billing`, and 81 tests:
+59 unit tests plus 22 PostgreSQL/Redis integration tests.
 
 ### If Alembic reports multiple heads
 
@@ -345,7 +478,7 @@ Run:
 uv run alembic heads --verbose
 ```
 
-This release must report only `0004_m1_foundation`. A second revision means an older or
+This release must report only `0005_m2_stripe_billing`. A second revision means an older or
 locally generated migration file remained in `alembic/versions`, commonly after
 extracting a release over an existing directory. Do **not** run `alembic upgrade heads`,
 delete the file, or create a merge migration until the extra migration's contents and
@@ -386,7 +519,7 @@ uv run python -m app.scripts.create_super_admin \
 
 Never pass real production passwords through shell history. In production, use a one-time secure operational process or a secret manager.
 
-## Milestone 1 acceptance checklist
+## Milestone 2 acceptance checklist
 
 - [ ] `docker compose ps` shows PostgreSQL and Redis healthy.
 - [ ] `alembic upgrade head` succeeds.
@@ -405,5 +538,20 @@ Never pass real production passwords through shell history. In production, use a
       the access token and active role assignment.
 - [ ] A user requesting another tenant's subscription ID receives `404`.
 - [ ] PostgreSQL rejects mismatched tenant foreign keys and a second live subscription.
+- [ ] Stripe is disabled safely when its configuration is absent.
+- [ ] Premium and Pro create sandbox Checkout Sessions using configured monthly Price IDs;
+      Enterprise is rejected as sales-assisted.
+- [ ] Checkout rejects a configured Stripe Price unless its active state, fixed amount,
+      currency, monthly interval, and licensed usage match the approved local Plan.
+- [ ] Checkout preserves only the unused portion of the onboarding trial and never starts
+      another 14 days.
+- [ ] Same-key Checkout retries are idempotent and concurrent/different open Checkouts
+      cannot create two paid subscriptions.
+- [ ] Invalid or wrong-environment webhooks make no billing changes.
+- [ ] Duplicate and concurrent Stripe Event deliveries are processed once.
+- [ ] Subscription renewals update item-level period boundaries and paid Plan entitlements.
+- [ ] Invoice events populate tenant-scoped billing history without stale status regression.
+- [ ] End-of-period cancellation and resumption synchronize with Stripe.
+- [ ] An unknown Stripe Price/status removes effective paid entitlements fail-closed.
 - [ ] The worker responds to `inspect ping` and completes the queued `spike.system.ping` task.
 - [ ] `ruff` and both test suites pass.

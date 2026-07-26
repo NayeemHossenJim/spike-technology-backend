@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -62,6 +63,18 @@ class Settings(BaseSettings):
     auth_rate_limit_requests: int = 10
     auth_rate_limit_window_seconds: int = 60
 
+    stripe_enabled: bool = False
+    stripe_secret_key: SecretStr | None = None
+    stripe_webhook_secret: SecretStr | None = None
+    stripe_premium_monthly_price_id: str | None = None
+    stripe_pro_monthly_price_id: str | None = None
+    stripe_checkout_success_url: str = (
+        "http://localhost:3000/billing/success?session_id={CHECKOUT_SESSION_ID}"
+    )
+    stripe_checkout_cancel_url: str = "http://localhost:3000/billing/cancel"
+    stripe_checkout_session_minutes: int = 60
+    stripe_webhook_tolerance_seconds: int = 300
+
     @field_validator("cors_origins", "trusted_hosts", mode="before")
     @classmethod
     def parse_list_setting(cls, value: str | list[str]) -> list[str]:
@@ -82,9 +95,67 @@ class Settings(BaseSettings):
             raise ValueError("OTP_MAX_ATTEMPTS must be greater than zero")
         if self.otp_resend_cooldown_seconds < 0:
             raise ValueError("OTP_RESEND_COOLDOWN_SECONDS cannot be negative")
+        if not 31 <= self.stripe_checkout_session_minutes <= 1439:
+            raise ValueError("STRIPE_CHECKOUT_SESSION_MINUTES must be between 31 and 1439")
+        if not 60 <= self.stripe_webhook_tolerance_seconds <= 900:
+            raise ValueError("STRIPE_WEBHOOK_TOLERANCE_SECONDS must be between 60 and 900")
         self.terms_version = self.terms_version.strip()
         if not self.terms_version:
             raise ValueError("TERMS_VERSION cannot be empty")
+
+        if self.stripe_enabled:
+            required_values = {
+                "STRIPE_SECRET_KEY": (
+                    self.stripe_secret_key.get_secret_value()
+                    if self.stripe_secret_key is not None
+                    else None
+                ),
+                "STRIPE_WEBHOOK_SECRET": (
+                    self.stripe_webhook_secret.get_secret_value()
+                    if self.stripe_webhook_secret is not None
+                    else None
+                ),
+                "STRIPE_PREMIUM_MONTHLY_PRICE_ID": self.stripe_premium_monthly_price_id,
+                "STRIPE_PRO_MONTHLY_PRICE_ID": self.stripe_pro_monthly_price_id,
+            }
+            missing = [name for name, value in required_values.items() if not value]
+            if missing:
+                raise ValueError(
+                    "Stripe billing is enabled but required settings are missing: "
+                    + ", ".join(missing)
+                )
+
+            stripe_secret = required_values["STRIPE_SECRET_KEY"] or ""
+            webhook_secret = required_values["STRIPE_WEBHOOK_SECRET"] or ""
+            if self.app_env is AppEnvironment.PRODUCTION:
+                if not stripe_secret.startswith("sk_live_"):
+                    raise ValueError("Production Stripe billing requires an sk_live_ secret key")
+            elif not stripe_secret.startswith("sk_test_"):
+                raise ValueError("Non-production Stripe billing requires an sk_test_ secret key")
+            if not webhook_secret.startswith("whsec_"):
+                raise ValueError("STRIPE_WEBHOOK_SECRET must start with whsec_")
+            for setting_name in (
+                "stripe_premium_monthly_price_id",
+                "stripe_pro_monthly_price_id",
+            ):
+                price_id = getattr(self, setting_name)
+                if price_id is None or not price_id.startswith("price_"):
+                    raise ValueError(f"{setting_name.upper()} must start with price_")
+            if self.stripe_premium_monthly_price_id == self.stripe_pro_monthly_price_id:
+                raise ValueError("Premium and Pro must use different Stripe Price IDs")
+
+            for setting_name in (
+                "stripe_checkout_success_url",
+                "stripe_checkout_cancel_url",
+            ):
+                url = getattr(self, setting_name)
+                parsed = urlparse(url)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    raise ValueError(f"{setting_name.upper()} must be an absolute HTTP(S) URL")
+                if self.app_env is AppEnvironment.PRODUCTION and parsed.scheme != "https":
+                    raise ValueError(f"{setting_name.upper()} must use HTTPS in production")
+            if "{CHECKOUT_SESSION_ID}" not in self.stripe_checkout_success_url:
+                raise ValueError("STRIPE_CHECKOUT_SUCCESS_URL must include {CHECKOUT_SESSION_ID}")
 
         if self.app_env is AppEnvironment.PRODUCTION:
             if "replace-this" in secret or "change-me" in secret:

@@ -218,6 +218,22 @@ class Subscription(
         default=None,
         sa_column=Column(String(255), nullable=True, unique=True),
     )
+    stripe_price_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+    )
+    last_stripe_event_created_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    last_stripe_event_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+    )
+    last_stripe_synced_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 class SubscriptionEntitlement(
