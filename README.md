@@ -275,7 +275,7 @@ uv run pytest tests/integration -q
 
 The test harness always replaces `DATABASE_URL` with `TEST_DATABASE_URL`, refuses to start unless the parsed database name ends in `_test`, and applies the real Alembic chain before the tests. This prevents the destructive setup/cleanup from touching the development `spike` database.
 
-The clean Phase 1 release currently contains one Alembic head, `0003_phase1_hardening`, and 47 tests: 35 unit tests plus 12 PostgreSQL/Redis integration tests.
+The clean Phase 1 release currently contains one Alembic head, `0003_phase1_hardening`, and 48 tests: 36 unit tests plus 12 PostgreSQL/Redis integration tests.
 
 ### If Alembic reports multiple heads
 
