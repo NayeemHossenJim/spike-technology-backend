@@ -14,6 +14,10 @@ class StripeGatewayError(Exception):
     """A Stripe API request could not be completed safely."""
 
 
+class StripeCheckoutRejectedError(StripeGatewayError):
+    """Stripe definitively rejected Checkout before creating a Session."""
+
+
 class StripeWebhookSignatureError(Exception):
     """The webhook payload was malformed or did not have a valid signature."""
 
@@ -96,6 +100,22 @@ class StripeSdkGateway:
                 params,
                 {"idempotency_key": idempotency_key},
             )
+        except (
+            stripe.APIConnectionError,
+            stripe.APIError,
+            stripe.IdempotencyError,
+            stripe.RateLimitError,
+        ) as exc:
+            raise StripeGatewayError("Stripe could not create the Checkout Session.") from exc
+        except (
+            stripe.AuthenticationError,
+            stripe.CardError,
+            stripe.InvalidRequestError,
+            stripe.PermissionError,
+        ) as exc:
+            raise StripeCheckoutRejectedError(
+                "Stripe rejected the Checkout Session request."
+            ) from exc
         except stripe.StripeError as exc:
             raise StripeGatewayError("Stripe could not create the Checkout Session.") from exc
         return _as_plain_dict(session)

@@ -36,7 +36,11 @@ from app.services.billing import (
     STRIPE_METADATA_PLAN_CODE,
     STRIPE_METADATA_SUBSCRIPTION_ID,
 )
-from app.services.stripe_gateway import StripeObject
+from app.services.stripe_gateway import (
+    StripeCheckoutRejectedError,
+    StripeGatewayError,
+    StripeObject,
+)
 from tests.conftest import InMemoryEmailSender
 from tests.integration.test_milestone1_foundation import (
     bearer,
@@ -54,6 +58,7 @@ class FakeStripeGateway:
     subscriptions: dict[str, StripeObject] = field(default_factory=dict)
     events_by_payload: dict[bytes, StripeObject] = field(default_factory=dict)
     event: StripeObject | None = None
+    checkout_error: Exception | None = None
 
     async def retrieve_price(
         self,
@@ -88,6 +93,8 @@ class FakeStripeGateway:
         idempotency_key: str,
     ) -> StripeObject:
         self.checkout_calls.append((deepcopy(params), idempotency_key))
+        if self.checkout_error is not None:
+            raise self.checkout_error
         sequence = len(self.checkout_calls)
         return {
             "id": f"cs_test_{sequence}",
@@ -322,6 +329,126 @@ async def test_checkout_is_idempotent_and_does_not_grant_before_webhook(
         checkout = (await session.execute(select(BillingCheckoutSession))).scalar_one()
         assert subscription.plan_id is None
         assert subscription.stripe_subscription_id is None
+        assert BillingCheckoutStatus(checkout.status) is BillingCheckoutStatus.OPEN
+
+
+@pytest.mark.integration
+async def test_definitive_checkout_rejection_expires_attempt_and_allows_fresh_retry(
+    app,
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    gateway = FakeStripeGateway(
+        checkout_error=StripeCheckoutRejectedError("Stripe rejected Checkout.")
+    )
+    configure_stripe_app(app, gateway)
+    token = await register_verify_and_login(
+        client,
+        email_sender,
+        email="stripe-definitive-rejection@example.com",
+    )
+    onboarding = await client.post(
+        "/api/v1/businesses",
+        headers=bearer(token),
+        json={"name": "Stripe Definitive Rejection Tenant"},
+    )
+    assert onboarding.status_code == 201
+
+    rejected = await client.post(
+        "/api/v1/billing/checkout-sessions",
+        headers={**bearer(token), "Idempotency-Key": str(uuid4())},
+        json={"plan_code": "premium"},
+    )
+    assert rejected.status_code == 502
+    assert rejected.json() == {"detail": "Stripe is temporarily unavailable."}
+
+    async with session_factory() as session:
+        checkout = (await session.execute(select(BillingCheckoutSession))).scalar_one()
+        assert BillingCheckoutStatus(checkout.status) is BillingCheckoutStatus.EXPIRED
+        assert checkout.stripe_checkout_session_id is None
+        assert checkout.checkout_url is None
+        assert checkout.expires_at is not None
+        assert checkout.expires_at <= utc_now()
+
+    gateway.checkout_error = None
+    retried = await client.post(
+        "/api/v1/billing/checkout-sessions",
+        headers={**bearer(token), "Idempotency-Key": str(uuid4())},
+        json={"plan_code": "premium"},
+    )
+    assert retried.status_code == 201
+    assert retried.json()["status"] == "open"
+    assert retried.json()["checkout_url"]
+
+    async with session_factory() as session:
+        checkouts = (
+            (
+                await session.execute(
+                    select(BillingCheckoutSession).order_by(BillingCheckoutSession.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(checkouts) == 2
+        assert [BillingCheckoutStatus(checkout.status) for checkout in checkouts] == [
+            BillingCheckoutStatus.EXPIRED,
+            BillingCheckoutStatus.OPEN,
+        ]
+
+
+@pytest.mark.integration
+async def test_ambiguous_checkout_failure_stays_pending_and_reuses_same_attempt(
+    app,
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    gateway = FakeStripeGateway(
+        checkout_error=StripeGatewayError("Stripe result is indeterminate.")
+    )
+    configure_stripe_app(app, gateway)
+    token = await register_verify_and_login(
+        client,
+        email_sender,
+        email="stripe-ambiguous-failure@example.com",
+    )
+    onboarding = await client.post(
+        "/api/v1/businesses",
+        headers=bearer(token),
+        json={"name": "Stripe Ambiguous Failure Tenant"},
+    )
+    assert onboarding.status_code == 201
+
+    headers = {**bearer(token), "Idempotency-Key": str(uuid4())}
+    failed = await client.post(
+        "/api/v1/billing/checkout-sessions",
+        headers=headers,
+        json={"plan_code": "premium"},
+    )
+    assert failed.status_code == 502
+
+    async with session_factory() as session:
+        checkout = (await session.execute(select(BillingCheckoutSession))).scalar_one()
+        assert BillingCheckoutStatus(checkout.status) is BillingCheckoutStatus.PENDING
+        checkout_id = checkout.id
+
+    gateway.checkout_error = None
+    retried = await client.post(
+        "/api/v1/billing/checkout-sessions",
+        headers=headers,
+        json={"plan_code": "premium"},
+    )
+    assert retried.status_code == 201
+    assert retried.json()["id"] == str(checkout_id)
+    assert retried.json()["status"] == "open"
+    assert len(gateway.checkout_calls) == 2
+    assert gateway.checkout_calls[0][1] == gateway.checkout_calls[1][1]
+
+    async with session_factory() as session:
+        checkout = (await session.execute(select(BillingCheckoutSession))).scalar_one()
+        assert checkout.id == checkout_id
         assert BillingCheckoutStatus(checkout.status) is BillingCheckoutStatus.OPEN
 
 

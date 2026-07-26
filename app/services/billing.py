@@ -31,7 +31,12 @@ from app.models.subscription import (
     SubscriptionStatus,
 )
 from app.models.user import User
-from app.services.stripe_gateway import StripeGateway, StripeGatewayError, StripeObject
+from app.services.stripe_gateway import (
+    StripeCheckoutRejectedError,
+    StripeGateway,
+    StripeGatewayError,
+    StripeObject,
+)
 from app.services.subscriptions import CURRENT_SUBSCRIPTION_STATUSES
 from app.services.tenant import TenantScope
 
@@ -310,7 +315,7 @@ def build_checkout_params(
         STRIPE_METADATA_ENVIRONMENT: settings.app_env.value,
     }
     subscription_data: StripeObject = {
-    "metadata": metadata,
+        "metadata": metadata,
     }
     trial_end = _remaining_trial_end(subscription, now=now)
     if trial_end is not None:
@@ -377,6 +382,29 @@ class CheckoutService:
         )
         for checkout in result.scalars().all():
             checkout.status = BillingCheckoutStatus.EXPIRED
+
+    async def _expire_rejected_attempt(
+        self,
+        *,
+        scope: TenantScope,
+        checkout_id: UUID,
+        now: datetime,
+    ) -> None:
+        result = await self.session.execute(
+            scope.select(
+                BillingCheckoutSession,
+                BillingCheckoutSession.id == checkout_id,
+            ).with_for_update()
+        )
+        checkout = result.scalar_one()
+        if (
+            BillingCheckoutStatus(checkout.status) is BillingCheckoutStatus.PENDING
+            and checkout.stripe_checkout_session_id is None
+            and checkout.checkout_url is None
+        ):
+            checkout.status = BillingCheckoutStatus.EXPIRED
+            checkout.expires_at = now
+        await self.session.commit()
 
     async def _latest_customer_id(self, scope: TenantScope) -> str | None:
         result = await self.session.execute(
@@ -565,10 +593,18 @@ class CheckoutService:
             stripe_customer_id=customer_id,
             now=now,
         )
-        remote = await self.gateway.create_checkout_session(
-            params=params,
-            idempotency_key=f"spike_checkout_{checkout.id}",
-        )
+        try:
+            remote = await self.gateway.create_checkout_session(
+                params=params,
+                idempotency_key=f"spike_checkout_{checkout.id}",
+            )
+        except StripeCheckoutRejectedError:
+            await self._expire_rejected_attempt(
+                scope=scope,
+                checkout_id=checkout.id,
+                now=utc_now(),
+            )
+            raise
         remote_id = _required_string(remote, "id")
         checkout_url = _required_string(remote, "url")
         expires_at = _stripe_datetime(remote.get("expires_at"))

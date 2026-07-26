@@ -8,6 +8,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
+import stripe
 from pydantic import ValidationError
 
 from app.core.config import Settings
@@ -31,6 +32,8 @@ from app.services.billing import (
     validate_checkout_price,
 )
 from app.services.stripe_gateway import (
+    StripeCheckoutRejectedError,
+    StripeGatewayError,
     StripeSdkGateway,
     StripeWebhookSignatureError,
 )
@@ -53,6 +56,17 @@ def stripe_settings(**overrides) -> Settings:
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
+
+
+class RaisingCheckoutStripeClient:
+    def __init__(self, error: stripe.StripeError) -> None:
+        self.error = error
+        self.v1 = self
+        self.checkout = self
+        self.sessions = self
+
+    async def create_async(self, *_args, **_kwargs):
+        raise self.error
 
 
 def test_stripe_configuration_fails_closed() -> None:
@@ -190,6 +204,47 @@ def test_checkout_does_not_create_a_second_trial_near_or_after_expiry() -> None:
     assert "trial_period_days" not in params["subscription_data"]
     assert params["customer"] == "cus_existing"
     assert "customer_email" not in params
+
+
+async def test_checkout_gateway_marks_invalid_request_as_definitive_rejection() -> None:
+    gateway = StripeSdkGateway(stripe_settings())
+    gateway._client = RaisingCheckoutStripeClient(  # type: ignore[assignment]
+        stripe.InvalidRequestError(
+            "Invalid Checkout parameters.",
+            "subscription_data[trial_end]",
+            http_status=400,
+        )
+    )
+
+    with pytest.raises(StripeCheckoutRejectedError):
+        await gateway.create_checkout_session(
+            params={"mode": "subscription"},
+            idempotency_key="checkout-definitive",
+        )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        stripe.APIConnectionError("Connection failed."),
+        stripe.APIError("Stripe server failed.", http_status=500),
+        stripe.IdempotencyError("Idempotency result requires reconciliation."),
+        stripe.RateLimitError("Rate limited.", http_status=429),
+    ],
+    ids=["connection", "api", "idempotency", "rate-limit"],
+)
+async def test_checkout_gateway_keeps_ambiguous_failures_reconcilable(
+    error: stripe.StripeError,
+) -> None:
+    gateway = StripeSdkGateway(stripe_settings())
+    gateway._client = RaisingCheckoutStripeClient(error)  # type: ignore[assignment]
+
+    with pytest.raises(StripeGatewayError) as caught:
+        await gateway.create_checkout_session(
+            params={"mode": "subscription"},
+            idempotency_key="checkout-ambiguous",
+        )
+    assert not isinstance(caught.value, StripeCheckoutRejectedError)
 
 
 def test_subscription_period_parser_uses_current_item_level_fields() -> None:
