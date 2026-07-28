@@ -24,6 +24,8 @@ from app.schemas.auth import EmailOTPRequest, LoginRequest, RegisterRequest
 
 def make_settings() -> Settings:
     return Settings(
+        _env_file=None,
+        stripe_enabled=False,
         app_env=AppEnvironment.TEST,
         database_url="postgresql+asyncpg://spike:password@localhost:5432/spike_test",
         redis_url="redis://localhost:6379/15",
@@ -57,6 +59,8 @@ def test_access_token_round_trip() -> None:
 def test_production_rejects_console_email_backend() -> None:
     with pytest.raises(ValueError, match="EMAIL_BACKEND"):
         Settings(
+            _env_file=None,
+            stripe_enabled=False,
             app_env=AppEnvironment.PRODUCTION,
             database_url="postgresql+asyncpg://spike:password@localhost:5432/spike",
             redis_url="redis://localhost:6379/0",
@@ -193,6 +197,8 @@ def test_persistent_refresh_cookie_has_approved_security_attributes() -> None:
 
 def test_production_refresh_cookie_is_secure() -> None:
     settings = Settings(
+        _env_file=None,
+        stripe_enabled=False,
         app_env=AppEnvironment.PRODUCTION,
         database_url="postgresql+asyncpg://spike:password@postgres:5432/spike",
         redis_url="redis://redis:6379/0",

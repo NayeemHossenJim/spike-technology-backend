@@ -12,11 +12,19 @@ from sqlmodel import select
 from app.core.config import Settings, get_settings
 from app.core.security import TokenType, decode_jwt_token
 from app.db.session import get_session
+from app.models.business import TenantRole
 from app.models.user import User, UserRole
 from app.services.auth import AuthService
 from app.services.email import EmailSender, get_email_sender
 from app.services.rate_limit import enforce_auth_rate_limit
 from app.services.redis import get_redis
+from app.services.tenant import (
+    TenantAccessForbiddenError,
+    TenantContext,
+    TenantContextMissingError,
+    TenantIntegrityError,
+    load_tenant_context,
+)
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -78,5 +86,42 @@ def require_roles(*roles: UserRole) -> Callable[..., User]:
                 detail="You do not have permission to perform this action.",
             )
         return current_user
+
+    return role_guard
+
+
+async def get_current_tenant(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TenantContext:
+    try:
+        return await load_tenant_context(session, current_user)
+    except TenantAccessForbiddenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform roles cannot access business financial data.",
+        ) from exc
+    except TenantContextMissingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Business onboarding is required.",
+        ) from exc
+    except TenantIntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The business assignment is invalid.",
+        ) from exc
+
+
+def require_tenant_roles(*roles: TenantRole) -> Callable[..., TenantContext]:
+    async def role_guard(
+        tenant: Annotated[TenantContext, Depends(get_current_tenant)],
+    ) -> TenantContext:
+        if tenant.role_assignment.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to perform this business action.",
+            )
+        return tenant
 
     return role_guard

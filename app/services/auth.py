@@ -210,16 +210,19 @@ class AuthService:
             terms_version=self.settings.terms_version,
         )
         self.session.add(user)
-        await self.session.flush()
-        raw_otp = await self._issue_otp(
-            user=user,
-            otp_model=EmailVerificationOTP,
-            expires_in_minutes=self.settings.email_verification_expire_minutes,
-            enforce_resend_cooldown=False,
-        )
-        if raw_otp is None:
-            raise RuntimeError("Initial verification OTP issuance unexpectedly failed")
         try:
+            # The unique-email constraint can fail at flush time when two registrations
+            # for the same normalized address race. Translate both flush- and
+            # commit-time constraint failures into the public 409 response.
+            await self.session.flush()
+            raw_otp = await self._issue_otp(
+                user=user,
+                otp_model=EmailVerificationOTP,
+                expires_in_minutes=self.settings.email_verification_expire_minutes,
+                enforce_resend_cooldown=False,
+            )
+            if raw_otp is None:
+                raise RuntimeError("Initial verification OTP issuance unexpectedly failed")
             await self.session.commit()
         except IntegrityError as exc:
             await self.session.rollback()
