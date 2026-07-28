@@ -21,6 +21,14 @@ from app.models.subscription import (
     SubscriptionEntitlement,
     SubscriptionStatus,
 )
+from app.models.upload import (
+    MAX_REPORT_UPLOAD_BYTES,
+    MAX_REPORT_UPLOAD_FILES_PER_BATCH,
+    ReportUpload,
+    ReportUploadBatch,
+    ReportUploadBatchStatus,
+    ReportUploadStatus,
+)
 from app.models.user import Industry, JobRole, User, UserRole
 
 __all__ = [
@@ -35,11 +43,17 @@ __all__ = [
     "EntitlementSource",
     "Industry",
     "JobRole",
+    "MAX_REPORT_UPLOAD_BYTES",
+    "MAX_REPORT_UPLOAD_FILES_PER_BATCH",
     "PasswordResetOTP",
     "Plan",
     "PlanEntitlement",
     "PREMIUM_DASHBOARD_LIMIT",
     "RefreshToken",
+    "ReportUpload",
+    "ReportUploadBatch",
+    "ReportUploadBatchStatus",
+    "ReportUploadStatus",
     "RoleAssignment",
     "SeededPlanCode",
     "Subscription",

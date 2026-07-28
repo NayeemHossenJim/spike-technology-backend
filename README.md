@@ -8,11 +8,12 @@ Production-oriented FastAPI backend for the confirmed Spike Technology v1 scope.
 | --- | --- | --- |
 | **0 — Phase 1 revalidation** | Authentication, OTPs, secure refresh sessions, PostgreSQL/Redis/Celery, migrations, and tests | Complete |
 | **1 — Business and subscription foundation** | Business onboarding, owner assignment, plan/subscription records, entitlement checks, and tenant isolation | Complete |
-| **2 — Stripe billing** | Checkout, signed/idempotent webhooks, renewals, cancellation scheduling, billing history, and entitlement synchronization | Complete in this release |
-| **3+ — Product workflow** | S3 uploads, file processing, Gemini, atomic credit ledger, dashboards, PDF, and admin operations | Pending |
+| **2 — Stripe billing** | Checkout, signed/idempotent webhooks, renewals, cancellation scheduling, billing history, and entitlement synchronization | Complete |
+| **3 — Secure report uploads** | Private S3 storage, tenant-owned upload batches, presigned POSTs, file security validation, and upload status | Complete in this release |
+| **4+ — Product workflow** | File parsing, Celery processing, Gemini, atomic credit ledger, dashboards, PDF, and admin operations | Pending |
 
-This release deliberately does **not** expose uploads, Gemini calls, dashboard creation,
-or PDF export.
+This release deliberately does **not** parse report data, enqueue report-processing
+jobs, call Gemini, create dashboards, or export PDFs.
 
 ## Current architecture
 
@@ -21,6 +22,7 @@ FastAPI API ── asyncpg/SQLModel ── PostgreSQL
      │
      ├── Redis ── Celery worker (smoke task now; jobs in Phase 2)
      ├── Stripe Checkout + signed webhooks ── local billing mirror
+     ├── private versioned S3 ── exact-policy presigned report uploads
      └── AWS SES via Boto3 + Asyncer (console sender in local development)
 
 Authenticated user ── active RoleAssignment ── one Business
@@ -29,7 +31,8 @@ Authenticated user ── active RoleAssignment ── one Business
 ```
 
 The stack is fixed as follows: FastAPI, SQLModel, asyncpg, PostgreSQL, Alembic,
-Asyncer, Celery + Redis, Stripe, Boto3, AWS SES, direct Gemini API via
+Asyncer, Celery + Redis, Stripe, Boto3, AWS SES, `olefile` for legacy workbook
+security inspection, direct Gemini API via
 `google-genai` (later milestone), pandas + `openpyxl` + `xlrd` (later milestone),
 and WeasyPrint (later milestone).
 
@@ -40,6 +43,7 @@ and WeasyPrint (later milestone).
 - Docker Desktop (for local PostgreSQL and Redis)
 - A Stripe sandbox account and Stripe CLI for live Checkout/webhook testing
 - An AWS account, verified SES identity, and AWS credentials only when moving from local development to real email delivery
+- A dedicated private, versioned S3 bucket only when enabling report uploads
 
 ## First-time installation
 
@@ -436,6 +440,108 @@ curl "http://localhost:8000/api/v1/billing/history?limit=20&offset=0" \
 Only the owner can access Checkout, lifecycle, and billing-history routes. Hosted invoice
 and PDF URLs are never returned across tenant boundaries.
 
+## Milestone 3 secure report uploads
+
+Report uploads are disabled by default. Authentication, onboarding, billing, and the
+test suite continue to work without AWS credentials.
+
+### Configure the private S3 bucket
+
+Use a dedicated bucket and set:
+
+```dotenv
+AWS_REGION=us-east-1
+S3_UPLOADS_ENABLED=true
+S3_UPLOAD_BUCKET=your-private-report-upload-bucket
+S3_UPLOAD_PREFIX=report-uploads
+S3_PRESIGNED_POST_EXPIRE_MINUTES=10
+```
+
+Do not put AWS access keys in `.env`. Use an AWS profile locally and an IAM role in
+deployment. The API refuses to issue or complete uploads unless the bucket has:
+
+- all four S3 Block Public Access settings enabled;
+- Bucket owner enforced object ownership;
+- versioning enabled; and
+- no public bucket policy.
+
+Also configure default encryption and a bucket policy that denies non-TLS requests.
+The application binds every upload to SSE-S3 (`AES256`) even when bucket-default
+encryption is configured.
+
+The application role needs these bucket inspection actions:
+
+- `s3:GetBucketPublicAccessBlock`
+- `s3:GetBucketOwnershipControls`
+- `s3:GetBucketVersioning`
+- `s3:GetBucketPolicyStatus`
+
+Restrict these object actions to the configured upload prefix:
+
+- `s3:PutObject`
+- `s3:GetObject`
+- `s3:GetObjectVersion`
+- `s3:DeleteObjectVersion`
+
+For browser uploads, configure S3 CORS with only the real frontend origins and the
+`POST` method. Allow the headers required by the returned signed form. CORS does not
+make the bucket public; IAM, the bucket policy, and the signed POST policy remain the
+authorization boundary.
+
+### Upload flow
+
+Create one tenant-owned batch with one to five files:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/report-uploads/batches \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "files": [
+      {
+        "filename": "sales.csv",
+        "content_type": "text/csv",
+        "size_bytes": 1254
+      }
+    ]
+  }'
+```
+
+The request accepts only filename, canonical content type, and exact size. It never
+accepts a business ID, user ID, S3 bucket, or object key. The response contains one
+short-lived S3 `POST` URL and a `fields` object for each file. The frontend must submit
+every returned field unchanged and add only the binary `file` form part.
+
+After all S3 POSTs return `201`, ask the API to verify the batch:
+
+```bash
+curl -X POST \
+  http://localhost:8000/api/v1/report-uploads/batches/PASTE_BATCH_ID/complete \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+```
+
+Read status without exposing storage coordinates:
+
+```bash
+curl \
+  http://localhost:8000/api/v1/report-uploads/batches/PASTE_BATCH_ID \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+```
+
+The server verifies the current immutable S3 version, exact byte count, canonical
+content type, encryption, cache policy, tenant/batch/upload metadata, ETag, and upload
+time before reading that exact version. Rejected object versions are deleted.
+
+Only UTF-8 CSV, legacy XLS, and XLSX files are accepted, with a 25 MB maximum per file.
+Filename tricks, executable double extensions, binary files renamed as CSV, malformed
+or encrypted workbooks, XLS macro/embedded content, XLSX path traversal, macros,
+ActiveX, embedded objects, external links, corrupt ZIP members, and excessive ZIP
+expansion are rejected. These checks are structural security validation, not general
+antivirus scanning.
+
+Parsing spreadsheet rows and scheduling Celery processing are intentionally deferred
+to Milestone 4. Milestone 3 creates no public object or file-download endpoint.
+
 ## Testing
 
 ### Fast checks, no Docker required
@@ -467,8 +573,8 @@ uv run pytest tests/integration -q
 
 The test harness always replaces `DATABASE_URL` with `TEST_DATABASE_URL`, refuses to start unless the parsed database name ends in `_test`, and applies the real Alembic chain before the tests. This prevents the destructive setup/cleanup from touching the development `spike` database.
 
-This release contains one Alembic head, `0005_m2_stripe_billing`, and 81 tests:
-59 unit tests plus 22 PostgreSQL/Redis integration tests.
+This release contains one Alembic head, `0007_m3_upload_positions`, and 106 tests:
+78 unit tests plus 28 PostgreSQL/Redis integration tests.
 
 ### If Alembic reports multiple heads
 
@@ -478,7 +584,7 @@ Run:
 uv run alembic heads --verbose
 ```
 
-This release must report only `0005_m2_stripe_billing`. A second revision means an older or
+This release must report only `0007_m3_upload_positions`. A second revision means an older or
 locally generated migration file remained in `alembic/versions`, commonly after
 extracting a release over an existing directory. Do **not** run `alembic upgrade heads`,
 delete the file, or create a merge migration until the extra migration's contents and
@@ -519,7 +625,7 @@ uv run python -m app.scripts.create_super_admin \
 
 Never pass real production passwords through shell history. In production, use a one-time secure operational process or a secret manager.
 
-## Milestone 2 acceptance checklist
+## Milestone 3 acceptance checklist
 
 - [ ] `docker compose ps` shows PostgreSQL and Redis healthy.
 - [ ] `alembic upgrade head` succeeds.
@@ -553,5 +659,18 @@ Never pass real production passwords through shell history. In production, use a
 - [ ] Invoice events populate tenant-scoped billing history without stale status regression.
 - [ ] End-of-period cancellation and resumption synchronize with Stripe.
 - [ ] An unknown Stripe Price/status removes effective paid entitlements fail-closed.
+- [ ] Report-upload routes return `503` while S3 uploads are intentionally disabled.
+- [ ] The enabled upload bucket passes Block Public Access, ownership, versioning, and
+      non-public-policy checks.
+- [ ] A batch accepts one to five CSV/XLS/XLSX files and rejects files over 25 MB.
+- [ ] Presigned POST fields bind the server-owned key, exact size, MIME type, SSE,
+      cache policy, and tenant/upload metadata.
+- [ ] The browser can upload using only the returned URL and fields.
+- [ ] Completion accepts only the verified immutable S3 version and records its status.
+- [ ] Suspicious, malformed, active-content, mislabeled, or expired uploads are rejected
+      and their inspected object versions are deleted.
+- [ ] Another tenant receives the same `404` as an unknown batch ID.
+- [ ] PostgreSQL rejects a creator/uploader from another tenant and inconsistent upload
+      status fields.
 - [ ] The worker responds to `inspect ping` and completes the queued `spike.system.ping` task.
 - [ ] `ruff` and both test suites pass.

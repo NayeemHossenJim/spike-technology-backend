@@ -774,6 +774,15 @@ wheels = [
 ]
 
 [[package]]
+name = "olefile"
+version = "0.47"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/1b/077b508e3e500e1629d366249c3ccb32f95e50258b231705c09e3c7a4366/olefile-0.47.zip", hash = "sha256:599383381a0bf3dfbd932ca0ca6515acd174ed48870cbf7fee123d698c192c1c", size = 112240, upload-time = "2023-12-01T16:22:53.025Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/17/d3/b64c356a907242d719fc668b71befd73324e47ab46c8ebbbede252c154b2/olefile-0.47-py2.py3-none-any.whl", hash = "sha256:543c7da2a7adadf21214938bb79c83ea12b473a4b6ee4ad4bf854e7715e13d1f", size = 114565, upload-time = "2023-12-01T16:22:51.518Z" },
+]
+
+[[package]]
 name = "openpyxl"
 version = "3.1.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1193,7 +1202,7 @@ wheels = [
 
 [[package]]
 name = "spike-backend"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -1203,6 +1212,7 @@ dependencies = [
     { name = "celery", extra = ["redis"] },
     { name = "email-validator" },
     { name = "fastapi" },
+    { name = "olefile" },
     { name = "pwdlib", extra = ["argon2"] },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
@@ -1241,6 +1251,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "google-genai", marker = "extra == 'phase2'", specifier = ">=1.0,<2.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28,<1.0" },
+    { name = "olefile", specifier = ">=0.47,<0.48" },
     { name = "openpyxl", marker = "extra == 'phase2'", specifier = ">=3.1,<4.0" },
     { name = "pandas", marker = "extra == 'phase2'", specifier = ">=2.2,<4.0" },
     { name = "pwdlib", extras = ["argon2"], specifier = ">=0.2,<1.0" },
