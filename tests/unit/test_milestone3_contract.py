@@ -163,8 +163,9 @@ def test_upload_configuration_is_optional_but_fails_closed_when_enabled() -> Non
 
     with pytest.raises(ValidationError, match="AWS_REGION and S3_UPLOAD_BUCKET"):
         upload_settings(s3_upload_bucket=None)
-    with pytest.raises(ValidationError, match="valid S3 bucket"):
-        upload_settings(s3_upload_bucket="Invalid_Bucket")
+    for invalid_bucket in ("Invalid_Bucket", "reports.-prod", "reports.prod-"):
+        with pytest.raises(ValidationError, match="valid S3 bucket"):
+            upload_settings(s3_upload_bucket=invalid_bucket)
     with pytest.raises(ValidationError, match="formatted as an IP"):
         upload_settings(s3_upload_bucket="192.168.1.20")
     with pytest.raises(ValidationError, match="AWS-reserved"):

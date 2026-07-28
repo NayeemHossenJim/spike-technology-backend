@@ -141,8 +141,11 @@ class Settings(BaseSettings):
             bucket = self.s3_upload_bucket
             if (
                 not 3 <= len(bucket) <= 63
-                or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", bucket)
                 or ".." in bucket
+                or not all(
+                    re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+                    for label in bucket.split(".")
+                )
             ):
                 raise ValueError("S3_UPLOAD_BUCKET is not a valid S3 bucket name")
             if bucket.startswith(("xn--", "sthree-", "amzn-s3-demo-")) or bucket.endswith(
