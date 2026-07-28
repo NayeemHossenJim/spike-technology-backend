@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+import re
 from enum import StrEnum
 from functools import lru_cache
 from urllib.parse import urlparse
@@ -63,6 +65,11 @@ class Settings(BaseSettings):
     auth_rate_limit_requests: int = 10
     auth_rate_limit_window_seconds: int = 60
 
+    s3_uploads_enabled: bool = False
+    s3_upload_bucket: str | None = None
+    s3_upload_prefix: str = "report-uploads"
+    s3_presigned_post_expire_minutes: int = 10
+
     stripe_enabled: bool = False
     stripe_secret_key: SecretStr | None = None
     stripe_webhook_secret: SecretStr | None = None
@@ -81,6 +88,19 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("s3_upload_bucket", mode="before")
+    @classmethod
+    def normalize_optional_bucket(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized or None
+        return value
+
+    @field_validator("s3_upload_prefix", mode="before")
+    @classmethod
+    def normalize_upload_prefix(cls, value: object) -> object:
+        return value.strip().strip("/") if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def validate_production_settings(self) -> Settings:
@@ -102,6 +122,42 @@ class Settings(BaseSettings):
         self.terms_version = self.terms_version.strip()
         if not self.terms_version:
             raise ValueError("TERMS_VERSION cannot be empty")
+
+        if not 1 <= self.s3_presigned_post_expire_minutes <= 60:
+            raise ValueError("S3_PRESIGNED_POST_EXPIRE_MINUTES must be between 1 and 60")
+        if (
+            not self.s3_upload_prefix
+            or len(self.s3_upload_prefix) > 128
+            or ".." in self.s3_upload_prefix
+            or "//" in self.s3_upload_prefix
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9/_-]*", self.s3_upload_prefix)
+        ):
+            raise ValueError("S3_UPLOAD_PREFIX is invalid")
+        if self.s3_uploads_enabled:
+            if not self.aws_region or not self.s3_upload_bucket:
+                raise ValueError(
+                    "AWS_REGION and S3_UPLOAD_BUCKET are required when S3 uploads are enabled"
+                )
+            bucket = self.s3_upload_bucket
+            if (
+                not 3 <= len(bucket) <= 63
+                or ".." in bucket
+                or not all(
+                    re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+                    for label in bucket.split(".")
+                )
+            ):
+                raise ValueError("S3_UPLOAD_BUCKET is not a valid S3 bucket name")
+            if bucket.startswith(("xn--", "sthree-", "amzn-s3-demo-")) or bucket.endswith(
+                ("-s3alias", "--ol-s3", ".mrap", "--x-s3", "--table-s3")
+            ):
+                raise ValueError("S3_UPLOAD_BUCKET uses an AWS-reserved name")
+            try:
+                ipaddress.ip_address(bucket)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("S3_UPLOAD_BUCKET cannot be formatted as an IP address")
 
         if self.stripe_enabled:
             required_values = {

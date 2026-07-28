@@ -331,7 +331,7 @@ def test_checkout_schema_and_openapi_do_not_accept_tenant_or_price_ids() -> None
         )
 
     schema = create_app().openapi()
-    assert schema["info"]["version"] == "0.3.0"
+    assert schema["info"]["version"] == "0.4.0"
     paths = schema["paths"]
     assert "/api/v1/billing/checkout-sessions" in paths
     assert "/api/v1/billing/webhooks/stripe" in paths
