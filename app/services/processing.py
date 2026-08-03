@@ -42,6 +42,7 @@ class ReportProcessingClaim:
     storage_key: str
     storage_version_id: str
     source_etag: str
+    original_filename: str
     file_extension: str
     content_type: str
     expected_size_bytes: int
@@ -313,10 +314,40 @@ class ReportProcessingService:
             storage_key=upload.storage_key,
             storage_version_id=job.source_storage_version_id,
             source_etag=job.source_etag,
+            original_filename=upload.original_filename,
             file_extension=upload.file_extension,
             content_type=upload.content_type,
             expected_size_bytes=upload.actual_size_bytes,
         )
+
+    async def claim_retry_delay(
+        self,
+        job_id: UUID,
+        *,
+        now: datetime | None = None,
+    ) -> timedelta | None:
+        """Return when a safe duplicate/redelivery should try to claim again."""
+
+        checked_at = now or utc_now()
+        result = await self.session.execute(
+            select(ReportProcessingJob).where(ReportProcessingJob.id == job_id)
+        )
+        job = result.scalar_one_or_none()
+        retry_delay: timedelta | None = None
+        if job is not None:
+            status = ReportProcessingStatus(job.status)
+            if status is ReportProcessingStatus.QUEUED:
+                retry_delay = max(
+                    (job.available_at or checked_at) - checked_at,
+                    timedelta(seconds=1),
+                )
+            elif status is ReportProcessingStatus.PROCESSING:
+                retry_delay = max(
+                    (job.lease_expires_at or checked_at) - checked_at,
+                    timedelta(seconds=1),
+                )
+        await self.session.commit()
+        return retry_delay
 
     async def retry_job(
         self,

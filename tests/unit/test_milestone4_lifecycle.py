@@ -126,4 +126,5 @@ async def test_dispatch_service_commits_before_publish_and_records_success() -> 
 
 def test_report_processing_task_is_registered_and_rejects_invalid_ids() -> None:
     assert process_report_upload.name == REPORT_PROCESSING_TASK_NAME
+    assert process_report_upload.max_retries is None
     assert process_report_upload.apply(args=["not-a-job-uuid"]).get() == {"status": "rejected"}

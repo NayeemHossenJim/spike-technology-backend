@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -51,6 +53,13 @@ class StoredS3Object:
     last_modified: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class WrittenS3Object:
+    content_length: int
+    etag: str
+    version_id: str
+
+
 class S3UploadGateway(Protocol):
     async def ensure_bucket_security(self, bucket: str) -> None: ...
 
@@ -77,6 +86,17 @@ class S3UploadGateway(Protocol):
         version_id: str,
         max_bytes: int,
     ) -> bytes: ...
+
+    async def write_object(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        content: bytes,
+        content_type: str,
+        content_encoding: str | None,
+        metadata: dict[str, str],
+    ) -> WrittenS3Object: ...
 
     async def delete_object(
         self,
@@ -303,6 +323,67 @@ class Boto3S3UploadGateway:
             raise S3StorageError("Unable to read the uploaded S3 object.") from exc
         except (BotoCoreError, OSError) as exc:
             raise S3StorageError("Unable to read the uploaded S3 object.") from exc
+
+    def _write_object(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        content: bytes,
+        content_type: str,
+        content_encoding: str | None,
+        metadata: dict[str, str],
+    ) -> WrittenS3Object:
+        checksum = base64.b64encode(hashlib.sha256(content).digest()).decode("ascii")
+        request: dict[str, Any] = {
+            "Bucket": bucket,
+            "Key": key,
+            "Body": content,
+            "ContentType": content_type,
+            "CacheControl": S3_CACHE_CONTROL,
+            "ServerSideEncryption": S3_ENCRYPTION_ALGORITHM,
+            "Metadata": metadata,
+            "ChecksumAlgorithm": "SHA256",
+            "ChecksumSHA256": checksum,
+        }
+        if content_encoding is not None:
+            request["ContentEncoding"] = content_encoding
+        response = self.client.put_object(**request)
+        etag = str(response["ETag"]).strip('"') if response.get("ETag") else ""
+        version_id = str(response["VersionId"]) if response.get("VersionId") else ""
+        if not etag or not version_id or version_id == "null":
+            raise S3BucketSecurityError(
+                "Stored processing artifacts require immutable S3 version identifiers."
+            )
+        return WrittenS3Object(
+            content_length=len(content),
+            etag=etag,
+            version_id=version_id,
+        )
+
+    async def write_object(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        content: bytes,
+        content_type: str,
+        content_encoding: str | None,
+        metadata: dict[str, str],
+    ) -> WrittenS3Object:
+        try:
+            return await asyncify(self._write_object)(
+                bucket=bucket,
+                key=key,
+                content=content,
+                content_type=content_type,
+                content_encoding=content_encoding,
+                metadata=metadata,
+            )
+        except S3BucketSecurityError:
+            raise
+        except (BotoCoreError, ClientError, OSError) as exc:
+            raise S3StorageError("Unable to store a private processing artifact.") from exc
 
     async def delete_object(
         self,

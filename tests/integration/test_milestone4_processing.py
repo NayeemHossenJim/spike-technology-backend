@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import gzip
+import json
+from dataclasses import dataclass, field
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -10,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlmodel import select
 
+from app.core.config import Settings, get_settings
 from app.models.base import utc_now
 from app.models.processing import ReportProcessingJob, ReportProcessingStatus
 from app.models.upload import (
@@ -19,7 +23,9 @@ from app.models.upload import (
     ReportUploadStatus,
 )
 from app.services.processing import ReportProcessingOutput, ReportProcessingService
+from app.services.s3_storage import S3StorageError, WrittenS3Object
 from app.services.tenant import TenantScope
+from app.workers.tasks import execute_report_processing_job
 from tests.conftest import InMemoryEmailSender, InMemoryReportProcessingDispatcher
 from tests.integration.test_milestone1_foundation import bearer
 from tests.integration.test_milestone3_uploads import (
@@ -35,6 +41,9 @@ async def create_verified_upload(
     business_id: UUID,
     user_id: UUID,
     filename: str,
+    content_size: int = 16,
+    extension: str = "csv",
+    content_type: str = "text/csv",
 ) -> ReportUpload:
     now = utc_now()
     batch = ReportUploadBatch(
@@ -51,14 +60,14 @@ async def create_verified_upload(
         batch_position=0,
         uploaded_by_user_id=user_id,
         original_filename=filename,
-        file_extension="csv",
-        content_type="text/csv",
-        expected_size_bytes=16,
+        file_extension=extension,
+        content_type=content_type,
+        expected_size_bytes=content_size,
         storage_bucket="spike-private-test-uploads",
-        storage_key=f"report-uploads/{business_id}/{batch.id}/{uuid4()}.csv",
+        storage_key=f"report-uploads/{business_id}/{batch.id}/{uuid4()}.{extension}",
         status=ReportUploadStatus.UPLOADED,
         expires_at=batch.expires_at,
-        actual_size_bytes=16,
+        actual_size_bytes=content_size,
         storage_version_id=f"version-{uuid4()}",
         etag=f"etag-{uuid4()}",
         uploaded_at=now,
@@ -69,6 +78,74 @@ async def create_verified_upload(
         session.add(upload)
         await session.commit()
     return upload
+
+
+@dataclass
+class InMemoryProcessingStorage:
+    source_bucket: str
+    source_key: str
+    source_version_id: str
+    source_content: bytes
+    read_failures_remaining: int = 0
+    security_checks: list[str] = field(default_factory=list)
+    writes: list[dict[str, object]] = field(default_factory=list)
+
+    async def ensure_bucket_security(self, bucket: str) -> None:
+        self.security_checks.append(bucket)
+
+    async def read_object(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        version_id: str,
+        max_bytes: int,
+    ) -> bytes:
+        if self.read_failures_remaining:
+            self.read_failures_remaining -= 1
+            raise S3StorageError
+        assert (bucket, key, version_id) == (
+            self.source_bucket,
+            self.source_key,
+            self.source_version_id,
+        )
+        assert len(self.source_content) <= max_bytes
+        return self.source_content
+
+    async def write_object(self, **kwargs) -> WrittenS3Object:
+        self.writes.append(dict(kwargs))
+        position = len(self.writes)
+        return WrittenS3Object(
+            content_length=len(kwargs["content"]),
+            etag=f"artifact-etag-{position}",
+            version_id=f"artifact-version-{position}",
+        )
+
+
+def processing_settings() -> Settings:
+    return get_settings().model_copy(
+        update={
+            "s3_uploads_enabled": True,
+            "aws_region": "us-east-1",
+            "s3_upload_bucket": "spike-private-test-uploads",
+            "s3_upload_prefix": "report-uploads",
+        }
+    )
+
+
+async def create_processing_job(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    business_id: UUID,
+    upload: ReportUpload,
+) -> UUID:
+    async with session_factory() as session:
+        jobs = await ReportProcessingService(session=session).ensure_jobs_for_uploads(
+            scope=TenantScope(business_id=business_id),
+            uploads=(upload,),
+        )
+        await session.commit()
+        return jobs[0].id
 
 
 def queued_job_values(*, business_id: UUID, upload: ReportUpload) -> dict[str, object]:
@@ -368,8 +445,6 @@ async def test_job_claim_retry_and_completion_are_lease_guarded(
         user_id=user_id,
         filename="lifecycle.csv",
     )
-    started_at = utc_now()
-
     async with session_factory() as session:
         service = ReportProcessingService(session=session)
         jobs = await service.ensure_jobs_for_uploads(
@@ -378,6 +453,7 @@ async def test_job_claim_retry_and_completion_are_lease_guarded(
         )
         await session.commit()
         job_id = jobs[0].id
+        started_at = utc_now()
 
         first_claim = await service.claim_job(job_id, now=started_at)
         assert first_claim is not None
@@ -391,6 +467,11 @@ async def test_job_claim_retry_and_completion_are_lease_guarded(
             )
             is None
         )
+        duplicate_retry_delay = await service.claim_retry_delay(
+            job_id,
+            now=started_at + timedelta(seconds=1),
+        )
+        assert duplicate_retry_delay == timedelta(minutes=14, seconds=59)
         assert not await service.retry_job(
             job_id,
             lease_token=uuid4(),
@@ -453,3 +534,272 @@ async def test_job_claim_retry_and_completion_are_lease_guarded(
         assert completed.sheet_count == 1
         assert completed.lease_token is None
         assert completed.error_code is None
+
+
+@pytest.mark.integration
+async def test_worker_parses_csv_writes_private_artifacts_and_completes_once(
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, onboarding = await onboard_owner(
+        client,
+        email_sender,
+        email="processing-worker-success@example.com",
+        business_name="Processing Worker Success",
+    )
+    business_id = UUID(onboarding["business"]["id"])
+    user_id = UUID(onboarding["role_assignment"]["user_id"])
+    content = b"month,revenue\nJan,1200\nFeb,1300\n"
+    upload = await create_verified_upload(
+        session_factory,
+        business_id=business_id,
+        user_id=user_id,
+        filename="worker.csv",
+        content_size=len(content),
+    )
+    job_id = await create_processing_job(
+        session_factory,
+        business_id=business_id,
+        upload=upload,
+    )
+    storage = InMemoryProcessingStorage(
+        source_bucket=upload.storage_bucket,
+        source_key=upload.storage_key,
+        source_version_id=upload.storage_version_id or "",
+        source_content=content,
+    )
+
+    outcome = await execute_report_processing_job(
+        job_id,
+        session_factory=session_factory,
+        settings=processing_settings(),
+        storage=storage,
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.retry_after_seconds is None
+    assert storage.security_checks == [upload.storage_bucket]
+    assert len(storage.writes) == 2
+    normalized, profile = storage.writes
+    normalized_records = [
+        json.loads(line)
+        for line in gzip.decompress(normalized["content"]).decode("utf-8").splitlines()
+    ]
+    assert [record["values"] for record in normalized_records] == [
+        {"month": "Jan", "revenue": "1200"},
+        {"month": "Feb", "revenue": "1300"},
+    ]
+    profile_payload = json.loads(profile["content"])
+    assert profile_payload["record_count"] == 2
+    assert profile_payload["sheet_count"] == 1
+    assert profile_payload["source"]["report_upload_id"] == str(upload.id)
+
+    async with session_factory() as session:
+        completed = await session.get(ReportProcessingJob, job_id)
+        assert completed is not None
+        assert ReportProcessingStatus(completed.status) is ReportProcessingStatus.COMPLETED
+        assert completed.attempt_count == 1
+        assert completed.normalized_storage_version_id == "artifact-version-1"
+        assert completed.profile_storage_version_id == "artifact-version-2"
+        assert completed.record_count == 2
+        assert completed.sheet_count == 1
+
+    repeated = await execute_report_processing_job(
+        job_id,
+        session_factory=session_factory,
+        settings=processing_settings(),
+        storage=storage,
+    )
+    assert repeated.status == "ignored"
+    assert len(storage.writes) == 2
+
+
+@pytest.mark.integration
+async def test_worker_retries_temporary_storage_failure_then_reuses_same_job(
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, onboarding = await onboard_owner(
+        client,
+        email_sender,
+        email="processing-worker-retry@example.com",
+        business_name="Processing Worker Retry",
+    )
+    business_id = UUID(onboarding["business"]["id"])
+    user_id = UUID(onboarding["role_assignment"]["user_id"])
+    content = b"month,revenue\nMar,1400\n"
+    upload = await create_verified_upload(
+        session_factory,
+        business_id=business_id,
+        user_id=user_id,
+        filename="retry.csv",
+        content_size=len(content),
+    )
+    job_id = await create_processing_job(
+        session_factory,
+        business_id=business_id,
+        upload=upload,
+    )
+    storage = InMemoryProcessingStorage(
+        source_bucket=upload.storage_bucket,
+        source_key=upload.storage_key,
+        source_version_id=upload.storage_version_id or "",
+        source_content=content,
+        read_failures_remaining=1,
+    )
+
+    first = await execute_report_processing_job(
+        job_id,
+        session_factory=session_factory,
+        settings=processing_settings(),
+        storage=storage,
+    )
+    assert first.status == "retrying"
+    assert first.retry_after_seconds == 30
+
+    deferred = await execute_report_processing_job(
+        job_id,
+        session_factory=session_factory,
+        settings=processing_settings(),
+        storage=storage,
+    )
+    assert deferred.status == "deferred"
+    assert deferred.retry_after_seconds is not None
+    assert 1 <= deferred.retry_after_seconds <= 30
+
+    async with session_factory() as session:
+        queued = await session.get(ReportProcessingJob, job_id)
+        assert queued is not None
+        assert ReportProcessingStatus(queued.status) is ReportProcessingStatus.QUEUED
+        assert queued.attempt_count == 1
+        assert queued.error_code == "source_storage_unavailable"
+        queued.available_at = queued.created_at
+        await session.commit()
+
+    recovered = await execute_report_processing_job(
+        job_id,
+        session_factory=session_factory,
+        settings=processing_settings(),
+        storage=storage,
+    )
+    assert recovered.status == "completed"
+    assert len(storage.writes) == 2
+
+    async with session_factory() as session:
+        completed = await session.get(ReportProcessingJob, job_id)
+        assert completed is not None
+        assert ReportProcessingStatus(completed.status) is ReportProcessingStatus.COMPLETED
+        assert completed.attempt_count == 2
+        assert completed.error_code is None
+
+
+@pytest.mark.integration
+async def test_worker_stops_retrying_when_the_durable_attempt_limit_is_reached(
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, onboarding = await onboard_owner(
+        client,
+        email_sender,
+        email="processing-worker-attempt-limit@example.com",
+        business_name="Processing Worker Attempt Limit",
+    )
+    business_id = UUID(onboarding["business"]["id"])
+    user_id = UUID(onboarding["role_assignment"]["user_id"])
+    content = b"month,revenue\nApr,1500\n"
+    upload = await create_verified_upload(
+        session_factory,
+        business_id=business_id,
+        user_id=user_id,
+        filename="attempt-limit.csv",
+        content_size=len(content),
+    )
+    job_id = await create_processing_job(
+        session_factory,
+        business_id=business_id,
+        upload=upload,
+    )
+    async with session_factory() as session:
+        job = await session.get(ReportProcessingJob, job_id)
+        assert job is not None
+        job.max_attempts = 1
+        await session.commit()
+
+    storage = InMemoryProcessingStorage(
+        source_bucket=upload.storage_bucket,
+        source_key=upload.storage_key,
+        source_version_id=upload.storage_version_id or "",
+        source_content=content,
+        read_failures_remaining=1,
+    )
+    outcome = await execute_report_processing_job(
+        job_id,
+        session_factory=session_factory,
+        settings=processing_settings(),
+        storage=storage,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.retry_after_seconds is None
+    async with session_factory() as session:
+        failed = await session.get(ReportProcessingJob, job_id)
+        assert failed is not None
+        assert ReportProcessingStatus(failed.status) is ReportProcessingStatus.FAILED
+        assert failed.attempt_count == 1
+        assert failed.error_code == "source_storage_unavailable"
+
+
+@pytest.mark.integration
+async def test_worker_marks_malformed_data_terminal_without_writing_artifacts(
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, onboarding = await onboard_owner(
+        client,
+        email_sender,
+        email="processing-worker-malformed@example.com",
+        business_name="Processing Worker Malformed",
+    )
+    business_id = UUID(onboarding["business"]["id"])
+    user_id = UUID(onboarding["role_assignment"]["user_id"])
+    content = b'header\n"unterminated'
+    upload = await create_verified_upload(
+        session_factory,
+        business_id=business_id,
+        user_id=user_id,
+        filename="malformed.csv",
+        content_size=len(content),
+    )
+    job_id = await create_processing_job(
+        session_factory,
+        business_id=business_id,
+        upload=upload,
+    )
+    storage = InMemoryProcessingStorage(
+        source_bucket=upload.storage_bucket,
+        source_key=upload.storage_key,
+        source_version_id=upload.storage_version_id or "",
+        source_content=content,
+    )
+
+    outcome = await execute_report_processing_job(
+        job_id,
+        session_factory=session_factory,
+        settings=processing_settings(),
+        storage=storage,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.retry_after_seconds is None
+    assert storage.writes == []
+    async with session_factory() as session:
+        failed = await session.get(ReportProcessingJob, job_id)
+        assert failed is not None
+        assert ReportProcessingStatus(failed.status) is ReportProcessingStatus.FAILED
+        assert failed.attempt_count == 1
+        assert failed.error_code == "csv_malformed"
+        assert failed.finished_at is not None
