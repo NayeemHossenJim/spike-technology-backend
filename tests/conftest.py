@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
@@ -61,6 +62,10 @@ from app.api.deps import enforce_auth_rate_limit_dependency  # noqa: E402
 from app.db.session import get_session  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.services.email import get_email_sender  # noqa: E402
+from app.services.processing_dispatch import (  # noqa: E402
+    ReportProcessingDispatchError,
+    get_report_processing_dispatcher,
+)
 
 
 @dataclass
@@ -75,9 +80,31 @@ class InMemoryEmailSender:
         self.password_reset_otps.append((recipient, otp))
 
 
+@dataclass
+class InMemoryReportProcessingDispatcher:
+    attempted_job_ids: list[UUID] = field(default_factory=list)
+    dispatched_job_ids: list[UUID] = field(default_factory=list)
+    failures_remaining: int = 0
+    before_dispatch: Callable[[UUID], Awaitable[None]] | None = None
+
+    async def dispatch(self, job_id: UUID) -> None:
+        self.attempted_job_ids.append(job_id)
+        if self.before_dispatch is not None:
+            await self.before_dispatch(job_id)
+        if self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            raise ReportProcessingDispatchError
+        self.dispatched_job_ids.append(job_id)
+
+
 @pytest.fixture
 def email_sender() -> InMemoryEmailSender:
     return InMemoryEmailSender()
+
+
+@pytest.fixture
+def processing_dispatcher() -> InMemoryReportProcessingDispatcher:
+    return InMemoryReportProcessingDispatcher()
 
 
 @pytest_asyncio.fixture
@@ -127,7 +154,11 @@ async def session_factory(
 
 
 @pytest.fixture
-def app(session_factory: async_sessionmaker[AsyncSession], email_sender: InMemoryEmailSender):
+def app(
+    session_factory: async_sessionmaker[AsyncSession],
+    email_sender: InMemoryEmailSender,
+    processing_dispatcher: InMemoryReportProcessingDispatcher,
+):
     test_app = create_app()
 
     async def override_session() -> AsyncGenerator[AsyncSession, None]:
@@ -139,6 +170,7 @@ def app(session_factory: async_sessionmaker[AsyncSession], email_sender: InMemor
 
     test_app.dependency_overrides[get_session] = override_session
     test_app.dependency_overrides[get_email_sender] = lambda: email_sender
+    test_app.dependency_overrides[get_report_processing_dispatcher] = lambda: processing_dispatcher
     test_app.dependency_overrides[enforce_auth_rate_limit_dependency] = no_rate_limit
     yield test_app
     test_app.dependency_overrides.clear()

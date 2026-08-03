@@ -17,6 +17,12 @@ from app.schemas.upload import (
     ReportUploadBatchRead,
     ReportUploadRead,
 )
+from app.services.processing import ReportProcessingConflictError
+from app.services.processing_dispatch import (
+    ReportProcessingDispatcher,
+    ReportProcessingDispatchError,
+    get_report_processing_dispatcher,
+)
 from app.services.s3_storage import (
     S3StorageError,
     S3UploadGateway,
@@ -40,11 +46,13 @@ def _service(
     session: AsyncSession,
     settings: Settings,
     storage: S3UploadGateway,
+    dispatcher: ReportProcessingDispatcher,
 ) -> ReportUploadService:
     return ReportUploadService(
         session=session,
         settings=settings,
         storage=storage,
+        dispatcher=dispatcher,
     )
 
 
@@ -102,12 +110,17 @@ async def create_report_upload_batch(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     storage: Annotated[S3UploadGateway, Depends(get_s3_upload_gateway)],
+    dispatcher: Annotated[
+        ReportProcessingDispatcher,
+        Depends(get_report_processing_dispatcher),
+    ],
 ) -> ReportUploadBatchCreatedRead:
     try:
         created = await _service(
             session=session,
             settings=settings,
             storage=storage,
+            dispatcher=dispatcher,
         ).create_batch(
             scope=tenant.scope,
             uploader_user_id=tenant.role_assignment.user_id,
@@ -140,11 +153,16 @@ async def read_report_upload_batch(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     storage: Annotated[S3UploadGateway, Depends(get_s3_upload_gateway)],
+    dispatcher: Annotated[
+        ReportProcessingDispatcher,
+        Depends(get_report_processing_dispatcher),
+    ],
 ) -> ReportUploadBatchRead:
     result = await _service(
         session=session,
         settings=settings,
         storage=storage,
+        dispatcher=dispatcher,
     ).get_batch(
         scope=tenant.scope,
         batch_id=batch_id,
@@ -161,12 +179,17 @@ async def complete_report_upload_batch(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     storage: Annotated[S3UploadGateway, Depends(get_s3_upload_gateway)],
+    dispatcher: Annotated[
+        ReportProcessingDispatcher,
+        Depends(get_report_processing_dispatcher),
+    ],
 ) -> ReportUploadBatchRead:
     try:
         result = await _service(
             session=session,
             settings=settings,
             storage=storage,
+            dispatcher=dispatcher,
         ).complete_batch(
             scope=tenant.scope,
             batch_id=batch_id,
@@ -185,6 +208,18 @@ async def complete_report_upload_batch(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="The report upload batch is inconsistent.",
+        ) from exc
+    except ReportProcessingConflictError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The report processing state is inconsistent.",
+        ) from exc
+    except ReportProcessingDispatchError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Report processing is temporarily unavailable.",
         ) from exc
     if result is None:
         raise _not_found()

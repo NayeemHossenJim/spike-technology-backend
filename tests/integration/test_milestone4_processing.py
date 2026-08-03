@@ -8,6 +8,7 @@ from httpx import AsyncClient
 from sqlalchemy import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlmodel import select
 
 from app.models.base import utc_now
 from app.models.processing import ReportProcessingJob, ReportProcessingStatus
@@ -17,8 +18,15 @@ from app.models.upload import (
     ReportUploadBatchStatus,
     ReportUploadStatus,
 )
-from tests.conftest import InMemoryEmailSender
-from tests.integration.test_milestone3_uploads import onboard_owner
+from app.services.processing import ReportProcessingOutput, ReportProcessingService
+from app.services.tenant import TenantScope
+from tests.conftest import InMemoryEmailSender, InMemoryReportProcessingDispatcher
+from tests.integration.test_milestone1_foundation import bearer
+from tests.integration.test_milestone3_uploads import (
+    FakeS3UploadGateway,
+    configure_upload_app,
+    onboard_owner,
+)
 
 
 async def create_verified_upload(
@@ -170,3 +178,278 @@ async def test_processing_jobs_are_one_per_upload_tenant_bound_and_state_checked
         connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
         with pytest.raises(IntegrityError):
             await connection.execute(insert(ReportProcessingJob).values(**invalid_completed))
+
+
+@pytest.mark.integration
+async def test_partial_batch_commits_one_job_before_idempotent_dispatch(
+    app,
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    processing_dispatcher: InMemoryReportProcessingDispatcher,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    gateway = FakeS3UploadGateway()
+    configure_upload_app(app, gateway)
+    token, onboarding = await onboard_owner(
+        client,
+        email_sender,
+        email="processing-partial@example.com",
+        business_name="Processing Partial Tenant",
+    )
+    valid_content = b"month,revenue\nJan,1200\n"
+    rejected_content = b"MZ" + b"\x00" * 62
+    created = await client.post(
+        "/api/v1/report-uploads/batches",
+        headers=bearer(token),
+        json={
+            "files": [
+                {
+                    "filename": "valid.csv",
+                    "content_type": "text/csv",
+                    "size_bytes": len(valid_content),
+                },
+                {
+                    "filename": "renamed.csv",
+                    "content_type": "text/csv",
+                    "size_bytes": len(rejected_content),
+                },
+            ]
+        },
+    )
+    assert created.status_code == 201
+    payload = created.json()
+    gateway.add_uploaded_object(
+        file_payload=payload["files"][0],
+        content=valid_content,
+    )
+    gateway.add_uploaded_object(
+        file_payload=payload["files"][1],
+        content=rejected_content,
+    )
+
+    async def assert_job_is_committed(job_id: UUID) -> None:
+        async with session_factory() as verification_session:
+            job = await verification_session.get(ReportProcessingJob, job_id)
+            batch = await verification_session.get(
+                ReportUploadBatch,
+                UUID(payload["id"]),
+            )
+            assert job is not None
+            assert job.report_upload_id == UUID(payload["files"][0]["id"])
+            assert job.source_storage_version_id == (f"version-{payload['files'][0]['id']}")
+            assert batch is not None
+            assert ReportUploadBatchStatus(batch.status) is ReportUploadBatchStatus.PARTIAL
+
+    processing_dispatcher.before_dispatch = assert_job_is_committed
+    completed = await client.post(
+        f"/api/v1/report-uploads/batches/{payload['id']}/complete",
+        headers=bearer(token),
+    )
+    assert completed.status_code == 200
+    completed_payload = completed.json()
+    assert completed_payload["status"] == "partial"
+    assert [item["status"] for item in completed_payload["files"]] == [
+        "uploaded",
+        "rejected",
+    ]
+    assert len(processing_dispatcher.dispatched_job_ids) == 1
+
+    business_id = UUID(onboarding["business"]["id"])
+    async with session_factory() as session:
+        jobs = (
+            (
+                await session.execute(
+                    select(ReportProcessingJob).where(
+                        ReportProcessingJob.business_id == business_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(jobs) == 1
+        assert jobs[0].id == processing_dispatcher.dispatched_job_ids[0]
+        assert jobs[0].dispatch_attempt_count == 1
+        assert jobs[0].last_dispatched_at is not None
+
+    repeated = await client.post(
+        f"/api/v1/report-uploads/batches/{payload['id']}/complete",
+        headers=bearer(token),
+    )
+    assert repeated.status_code == 200
+    assert repeated.json() == completed_payload
+    assert processing_dispatcher.attempted_job_ids == [jobs[0].id]
+
+
+@pytest.mark.integration
+async def test_broker_failure_preserves_job_and_retry_redrives_same_uuid(
+    app,
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    processing_dispatcher: InMemoryReportProcessingDispatcher,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    gateway = FakeS3UploadGateway()
+    configure_upload_app(app, gateway)
+    token, _ = await onboard_owner(
+        client,
+        email_sender,
+        email="processing-redrive@example.com",
+        business_name="Processing Redrive Tenant",
+    )
+    content = b"month,revenue\nFeb,1300\n"
+    created = await client.post(
+        "/api/v1/report-uploads/batches",
+        headers=bearer(token),
+        json={
+            "files": [
+                {
+                    "filename": "redrive.csv",
+                    "content_type": "text/csv",
+                    "size_bytes": len(content),
+                }
+            ]
+        },
+    )
+    payload = created.json()
+    gateway.add_uploaded_object(file_payload=payload["files"][0], content=content)
+    processing_dispatcher.failures_remaining = 1
+
+    unavailable = await client.post(
+        f"/api/v1/report-uploads/batches/{payload['id']}/complete",
+        headers=bearer(token),
+    )
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"detail": "Report processing is temporarily unavailable."}
+
+    async with session_factory() as session:
+        batch = await session.get(ReportUploadBatch, UUID(payload["id"]))
+        job = (await session.execute(select(ReportProcessingJob))).scalar_one()
+        assert batch is not None
+        assert ReportUploadBatchStatus(batch.status) is ReportUploadBatchStatus.COMPLETE
+        assert ReportProcessingStatus(job.status) is ReportProcessingStatus.QUEUED
+        assert job.dispatch_attempt_count == 0
+        assert job.last_dispatched_at is None
+        durable_job_id = job.id
+
+    recovered = await client.post(
+        f"/api/v1/report-uploads/batches/{payload['id']}/complete",
+        headers=bearer(token),
+    )
+    assert recovered.status_code == 200
+    assert recovered.json()["status"] == "complete"
+    assert processing_dispatcher.attempted_job_ids == [durable_job_id, durable_job_id]
+    assert processing_dispatcher.dispatched_job_ids == [durable_job_id]
+
+    async with session_factory() as session:
+        job = await session.get(ReportProcessingJob, durable_job_id)
+        assert job is not None
+        assert job.dispatch_attempt_count == 1
+        assert job.last_dispatched_at is not None
+
+
+@pytest.mark.integration
+async def test_job_claim_retry_and_completion_are_lease_guarded(
+    client: AsyncClient,
+    email_sender: InMemoryEmailSender,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    _, onboarding = await onboard_owner(
+        client,
+        email_sender,
+        email="processing-lifecycle@example.com",
+        business_name="Processing Lifecycle Tenant",
+    )
+    business_id = UUID(onboarding["business"]["id"])
+    user_id = UUID(onboarding["role_assignment"]["user_id"])
+    upload = await create_verified_upload(
+        session_factory,
+        business_id=business_id,
+        user_id=user_id,
+        filename="lifecycle.csv",
+    )
+    started_at = utc_now()
+
+    async with session_factory() as session:
+        service = ReportProcessingService(session=session)
+        jobs = await service.ensure_jobs_for_uploads(
+            scope=TenantScope(business_id=business_id),
+            uploads=(upload,),
+        )
+        await session.commit()
+        job_id = jobs[0].id
+
+        first_claim = await service.claim_job(job_id, now=started_at)
+        assert first_claim is not None
+        assert first_claim.attempt_count == 1
+        assert first_claim.storage_version_id == upload.storage_version_id
+
+        assert (
+            await service.claim_job(
+                job_id,
+                now=started_at + timedelta(seconds=1),
+            )
+            is None
+        )
+        assert not await service.retry_job(
+            job_id,
+            lease_token=uuid4(),
+            error_code="temporary_database_failure",
+            retry_delay=timedelta(seconds=30),
+            now=started_at + timedelta(seconds=1),
+        )
+        assert await service.retry_job(
+            job_id,
+            lease_token=first_claim.lease_token,
+            error_code="temporary_database_failure",
+            retry_delay=timedelta(seconds=30),
+            now=started_at + timedelta(seconds=1),
+        )
+        assert (
+            await service.claim_job(
+                job_id,
+                now=started_at + timedelta(seconds=30),
+            )
+            is None
+        )
+
+        second_claim = await service.claim_job(
+            job_id,
+            now=started_at + timedelta(seconds=32),
+        )
+        assert second_claim is not None
+        assert second_claim.attempt_count == 2
+
+        output = ReportProcessingOutput(
+            storage_bucket="spike-private-test-results",
+            normalized_storage_key=f"processed/{business_id}/{job_id}/normalized.parquet",
+            normalized_storage_version_id=f"normalized-version-{uuid4()}",
+            normalized_etag=f"normalized-etag-{uuid4()}",
+            normalized_size_bytes=128,
+            profile_storage_key=f"processed/{business_id}/{job_id}/profile.json",
+            profile_storage_version_id=f"profile-version-{uuid4()}",
+            profile_etag=f"profile-etag-{uuid4()}",
+            record_count=2,
+            sheet_count=1,
+        )
+        assert await service.complete_job(
+            job_id,
+            lease_token=second_claim.lease_token,
+            output=output,
+            now=started_at + timedelta(seconds=33),
+        )
+        assert not await service.complete_job(
+            job_id,
+            lease_token=second_claim.lease_token,
+            output=output,
+            now=started_at + timedelta(seconds=34),
+        )
+
+        completed = await session.get(ReportProcessingJob, job_id)
+        assert completed is not None
+        assert ReportProcessingStatus(completed.status) is ReportProcessingStatus.COMPLETED
+        assert completed.attempt_count == 2
+        assert completed.record_count == 2
+        assert completed.sheet_count == 1
+        assert completed.lease_token is None
+        assert completed.error_code is None
