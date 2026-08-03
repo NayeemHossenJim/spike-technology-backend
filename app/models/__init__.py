@@ -8,6 +8,12 @@ from app.models.billing import (
     StripeWebhookResult,
 )
 from app.models.business import Business, RoleAssignment, TenantRole
+from app.models.processing import (
+    DEFAULT_REPORT_PROCESSING_MAX_ATTEMPTS,
+    MAX_REPORT_PROCESSING_ATTEMPTS,
+    ReportProcessingJob,
+    ReportProcessingStatus,
+)
 from app.models.subscription import (
     AI_FULL_RESPONSES_PER_PERIOD,
     PREMIUM_DASHBOARD_LIMIT,
@@ -38,6 +44,7 @@ __all__ = [
     "BillingCheckoutStatus",
     "BillingInvoice",
     "BillingInvoiceStatus",
+    "DEFAULT_REPORT_PROCESSING_MAX_ATTEMPTS",
     "EmailVerificationOTP",
     "EntitlementKey",
     "EntitlementSource",
@@ -45,11 +52,14 @@ __all__ = [
     "JobRole",
     "MAX_REPORT_UPLOAD_BYTES",
     "MAX_REPORT_UPLOAD_FILES_PER_BATCH",
+    "MAX_REPORT_PROCESSING_ATTEMPTS",
     "PasswordResetOTP",
     "Plan",
     "PlanEntitlement",
     "PREMIUM_DASHBOARD_LIMIT",
     "RefreshToken",
+    "ReportProcessingJob",
+    "ReportProcessingStatus",
     "ReportUpload",
     "ReportUploadBatch",
     "ReportUploadBatchStatus",

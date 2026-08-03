@@ -118,6 +118,11 @@ class ReportUpload(
             "batch_position",
             name="uq_report_uploads_batch_position",
         ),
+        UniqueConstraint(
+            "id",
+            "business_id",
+            name="uq_report_uploads_id_business",
+        ),
         CheckConstraint(
             f"batch_position BETWEEN 0 AND {MAX_REPORT_UPLOAD_FILES_PER_BATCH - 1}",
             name="ck_report_uploads_batch_position",

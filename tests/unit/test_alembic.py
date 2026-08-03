@@ -19,7 +19,7 @@ def make_alembic_config() -> Config:
 
 def test_alembic_has_exactly_one_migration_head() -> None:
     heads = ScriptDirectory.from_config(make_alembic_config()).get_heads()
-    assert heads == ["0007_m3_upload_positions"]
+    assert heads == ["0008_m4_data_processing"]
 
 
 def test_alembic_path_separator_uses_current_setting() -> None:
