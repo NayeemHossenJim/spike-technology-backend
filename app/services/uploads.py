@@ -402,12 +402,10 @@ class ReportUploadService:
         session: AsyncSession,
         settings: Settings,
         storage: S3UploadGateway,
-        dispatcher: ReportProcessingDispatcher,
     ) -> None:
         self.session = session
         self.settings = settings
         self.storage = storage
-        self.dispatcher = dispatcher
 
     def _storage_configuration(self) -> tuple[str, str, int]:
         if (
@@ -638,6 +636,7 @@ class ReportUploadService:
         *,
         scope: TenantScope,
         batch_id: UUID,
+        dispatcher: ReportProcessingDispatcher,
     ) -> ReportUploadBatchResult | None:
         batch = await self._locked_batch(scope, batch_id)
         if batch is None:
@@ -676,7 +675,7 @@ class ReportUploadService:
         await self.session.commit()
         await processing.dispatch_due_jobs(
             job_ids=(job.id for job in jobs),
-            dispatcher=self.dispatcher,
+            dispatcher=dispatcher,
         )
         return ReportUploadBatchResult(batch=batch, uploads=uploads)
 

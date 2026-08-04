@@ -205,7 +205,7 @@ class ReportProcessingService:
                 continue
 
             await dispatcher.dispatch(job_id)
-            recorded_at = utc_now()
+            recorded_at = dispatch_time if now is not None else utc_now()
             try:
                 locked_result = await self.session.execute(
                     select(ReportProcessingJob)

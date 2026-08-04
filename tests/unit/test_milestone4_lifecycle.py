@@ -121,7 +121,7 @@ async def test_dispatch_service_commits_before_publish_and_records_success() -> 
     assert session.commit.await_count == 2
     assert session.rollback.await_count == 0
     assert job.dispatch_attempt_count == 1
-    assert job.last_dispatched_at is not None
+    assert job.last_dispatched_at == now
 
 
 def test_report_processing_task_is_registered_and_rejects_invalid_ids() -> None:

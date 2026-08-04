@@ -46,13 +46,11 @@ def _service(
     session: AsyncSession,
     settings: Settings,
     storage: S3UploadGateway,
-    dispatcher: ReportProcessingDispatcher,
 ) -> ReportUploadService:
     return ReportUploadService(
         session=session,
         settings=settings,
         storage=storage,
-        dispatcher=dispatcher,
     )
 
 
@@ -110,17 +108,12 @@ async def create_report_upload_batch(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     storage: Annotated[S3UploadGateway, Depends(get_s3_upload_gateway)],
-    dispatcher: Annotated[
-        ReportProcessingDispatcher,
-        Depends(get_report_processing_dispatcher),
-    ],
 ) -> ReportUploadBatchCreatedRead:
     try:
         created = await _service(
             session=session,
             settings=settings,
             storage=storage,
-            dispatcher=dispatcher,
         ).create_batch(
             scope=tenant.scope,
             uploader_user_id=tenant.role_assignment.user_id,
@@ -153,16 +146,11 @@ async def read_report_upload_batch(
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     storage: Annotated[S3UploadGateway, Depends(get_s3_upload_gateway)],
-    dispatcher: Annotated[
-        ReportProcessingDispatcher,
-        Depends(get_report_processing_dispatcher),
-    ],
 ) -> ReportUploadBatchRead:
     result = await _service(
         session=session,
         settings=settings,
         storage=storage,
-        dispatcher=dispatcher,
     ).get_batch(
         scope=tenant.scope,
         batch_id=batch_id,
@@ -189,10 +177,10 @@ async def complete_report_upload_batch(
             session=session,
             settings=settings,
             storage=storage,
-            dispatcher=dispatcher,
         ).complete_batch(
             scope=tenant.scope,
             batch_id=batch_id,
+            dispatcher=dispatcher,
         )
     except ReportUploadsDisabledError as exc:
         await session.rollback()
