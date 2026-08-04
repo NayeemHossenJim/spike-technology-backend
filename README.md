@@ -9,18 +9,20 @@ Production-oriented FastAPI backend for the confirmed Spike Technology v1 scope.
 | **0 — Phase 1 revalidation** | Authentication, OTPs, secure refresh sessions, PostgreSQL/Redis/Celery, migrations, and tests | Complete |
 | **1 — Business and subscription foundation** | Business onboarding, owner assignment, plan/subscription records, entitlement checks, and tenant isolation | Complete |
 | **2 — Stripe billing** | Checkout, signed/idempotent webhooks, renewals, cancellation scheduling, billing history, and entitlement synchronization | Complete |
-| **3 — Secure report uploads** | Private S3 storage, tenant-owned upload batches, presigned POSTs, file security validation, and upload status | Complete in this release |
-| **4+ — Product workflow** | File parsing, Celery processing, Gemini, atomic credit ledger, dashboards, PDF, and admin operations | Pending |
+| **3 — Secure report uploads** | Private S3 storage, tenant-owned upload batches, presigned POSTs, file security validation, and upload status | Complete |
+| **4 — Data processing** | Durable tenant-bound jobs, reliable Celery dispatch, bounded CSV/XLS/XLSX parsing, and private versioned artifacts | In progress — Stages 1–3 complete |
+| **5+ — Product workflow** | Gemini, atomic credit ledger, dashboards, PDF, and admin operations | Pending |
 
-This release deliberately does **not** parse report data, enqueue report-processing
-jobs, call Gemini, create dashboards, or export PDFs.
+The current Milestone 4 checkpoint creates durable report-processing jobs and writes
+private normalized artifacts. It deliberately does **not** call Gemini, consume AI
+credits, create dashboards, or export PDFs.
 
 ## Current architecture
 
 ```text
 FastAPI API ── asyncpg/SQLModel ── PostgreSQL
      │
-     ├── Redis ── Celery worker (smoke task now; jobs in Phase 2)
+     ├── Redis ── Celery worker ── lease-guarded report processing
      ├── Stripe Checkout + signed webhooks ── local billing mirror
      ├── private versioned S3 ── exact-policy presigned report uploads
      └── AWS SES via Boto3 + Asyncer (console sender in local development)
@@ -31,10 +33,9 @@ Authenticated user ── active RoleAssignment ── one Business
 ```
 
 The stack is fixed as follows: FastAPI, SQLModel, asyncpg, PostgreSQL, Alembic,
-Asyncer, Celery + Redis, Stripe, Boto3, AWS SES, `olefile` for legacy workbook
-security inspection, direct Gemini API via
-`google-genai` (later milestone), pandas + `openpyxl` + `xlrd` (later milestone),
-and WeasyPrint (later milestone).
+Asyncer, Celery + Redis, Stripe, Boto3, AWS SES, `olefile`, `defusedxml`,
+`openpyxl`, and `xlrd` for safe bounded workbook processing; direct Gemini API via
+`google-genai`, pandas, and WeasyPrint arrive in later milestones.
 
 ## Prerequisites
 
@@ -81,8 +82,8 @@ Copy the generated value into `JWT_SECRET_KEY` in `.env`. Never commit `.env`.
 uv sync --frozen --extra dev
 ```
 
-Later data-processing packages are installed with `uv sync --extra dev --extra phase2`.
-PDF support adds `--extra phase3`.
+CSV/XLS/XLSX parser packages are part of the locked base runtime. The `phase2` extra
+adds later Gemini/data-analysis packages; PDF support adds `--extra phase3`.
 
 ### 5. Start PostgreSQL and Redis
 
@@ -539,8 +540,11 @@ ActiveX, embedded objects, external links, corrupt ZIP members, and excessive ZI
 expansion are rejected. These checks are structural security validation, not general
 antivirus scanning.
 
-Parsing spreadsheet rows and scheduling Celery processing are intentionally deferred
-to Milestone 4. Milestone 3 creates no public object or file-download endpoint.
+Each verified file now receives one durable job before broker publication. The worker
+reads only the recorded immutable source version, applies fixed sheet/row/column/cell
+and output limits, and writes deterministic gzip JSONL plus schema/profile JSON to
+server-owned, private, versioned S3 keys. Malformed data fails with a safe code;
+temporary storage failures retry. No public object or file-download endpoint exists.
 
 ## Testing
 
@@ -672,5 +676,13 @@ Never pass real production passwords through shell history. In production, use a
 - [ ] Another tenant receives the same `404` as an unknown batch ID.
 - [ ] PostgreSQL rejects a creator/uploader from another tenant and inconsistent upload
       status fields.
+- [ ] Each verified upload receives one tenant-bound processing job before dispatch;
+      partial batches process only their valid files.
+- [ ] CSV, XLS, and XLSX parsing observes fixed sheet, row, column, cell, expansion, and
+      normalized-output limits without evaluating workbook formulas.
+- [ ] Completed jobs reference immutable gzip JSONL and profile JSON versions under
+      server-owned tenant/job keys; duplicate delivery does not rewrite completed jobs.
+- [ ] Temporary storage failures retry the same job UUID, while malformed inputs fail
+      with safe detail-free error codes.
 - [ ] The worker responds to `inspect ping` and completes the queued `spike.system.ping` task.
 - [ ] `ruff` and both test suites pass.

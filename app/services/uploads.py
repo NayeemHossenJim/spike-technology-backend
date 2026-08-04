@@ -22,6 +22,8 @@ from app.models.upload import (
     ReportUploadStatus,
 )
 from app.schemas.upload import ReportUploadBatchCreate, ReportUploadFileCreate
+from app.services.processing import ReportProcessingService
+from app.services.processing_dispatch import ReportProcessingDispatcher
 from app.services.s3_storage import (
     S3_CACHE_CONTROL,
     S3_ENCRYPTION_ALGORITHM,
@@ -634,6 +636,7 @@ class ReportUploadService:
         *,
         scope: TenantScope,
         batch_id: UUID,
+        dispatcher: ReportProcessingDispatcher,
     ) -> ReportUploadBatchResult | None:
         batch = await self._locked_batch(scope, batch_id)
         if batch is None:
@@ -642,27 +645,38 @@ class ReportUploadService:
         uploads = await self._batch_uploads(scope, batch_id)
         if len(uploads) != batch.file_count:
             raise ReportUploadConflictError
+
+        if ReportUploadBatchStatus(batch.status) is ReportUploadBatchStatus.PENDING:
+            configured_bucket, _, _ = self._storage_configuration()
+            if any(upload.storage_bucket != configured_bucket for upload in uploads):
+                raise ReportUploadConflictError
+            await self.storage.ensure_bucket_security(configured_bucket)
+
+            now = utc_now()
+            for upload in uploads:
+                if ReportUploadStatus(upload.status) is ReportUploadStatus.PENDING:
+                    await self._verify_pending_upload(
+                        upload=upload,
+                        batch=batch,
+                        now=now,
+                    )
+
+            batch.status = _batch_status(uploads)
+            if ReportUploadBatchStatus(batch.status) is not ReportUploadBatchStatus.PENDING:
+                batch.completed_at = now
+
+        processing = ReportProcessingService(session=self.session)
+        jobs = ()
         if ReportUploadBatchStatus(batch.status) is not ReportUploadBatchStatus.PENDING:
-            return ReportUploadBatchResult(batch=batch, uploads=uploads)
-
-        configured_bucket, _, _ = self._storage_configuration()
-        if any(upload.storage_bucket != configured_bucket for upload in uploads):
-            raise ReportUploadConflictError
-        await self.storage.ensure_bucket_security(configured_bucket)
-
-        now = utc_now()
-        for upload in uploads:
-            if ReportUploadStatus(upload.status) is ReportUploadStatus.PENDING:
-                await self._verify_pending_upload(
-                    upload=upload,
-                    batch=batch,
-                    now=now,
-                )
-
-        batch.status = _batch_status(uploads)
-        if ReportUploadBatchStatus(batch.status) is not ReportUploadBatchStatus.PENDING:
-            batch.completed_at = now
+            jobs = await processing.ensure_jobs_for_uploads(
+                scope=scope,
+                uploads=uploads,
+            )
         await self.session.commit()
+        await processing.dispatch_due_jobs(
+            job_ids=(job.id for job in jobs),
+            dispatcher=dispatcher,
+        )
         return ReportUploadBatchResult(batch=batch, uploads=uploads)
 
 
