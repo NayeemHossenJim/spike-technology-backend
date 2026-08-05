@@ -64,6 +64,8 @@ class Settings(BaseSettings):
 
     auth_rate_limit_requests: int = 10
     auth_rate_limit_window_seconds: int = 60
+    ai_rate_limit_requests: int = 10
+    ai_rate_limit_window_seconds: int = 60
 
     s3_uploads_enabled: bool = False
     s3_upload_bucket: str | None = None
@@ -126,6 +128,10 @@ class Settings(BaseSettings):
             raise ValueError("OTP_MAX_ATTEMPTS must be greater than zero")
         if self.otp_resend_cooldown_seconds < 0:
             raise ValueError("OTP_RESEND_COOLDOWN_SECONDS cannot be negative")
+        if self.ai_rate_limit_requests <= 0:
+            raise ValueError("AI_RATE_LIMIT_REQUESTS must be greater than zero")
+        if not 1 <= self.ai_rate_limit_window_seconds <= 3600:
+            raise ValueError("AI_RATE_LIMIT_WINDOW_SECONDS must be between 1 and 3600")
         if not 31 <= self.stripe_checkout_session_minutes <= 1439:
             raise ValueError("STRIPE_CHECKOUT_SESSION_MINUTES must be between 31 and 1439")
         if not 60 <= self.stripe_webhook_tolerance_seconds <= 900:

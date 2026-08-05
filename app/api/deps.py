@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request, Security, status
+from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,11 +12,13 @@ from sqlmodel import select
 from app.core.config import Settings, get_settings
 from app.core.security import TokenType, decode_jwt_token
 from app.db.session import get_session
+from app.models.ai import AIMessage
 from app.models.business import TenantRole
 from app.models.user import User, UserRole
+from app.services.ai_credits import digest_ai_idempotency_key
 from app.services.auth import AuthService
 from app.services.email import EmailSender, get_email_sender
-from app.services.rate_limit import enforce_auth_rate_limit
+from app.services.rate_limit import enforce_ai_rate_limit, enforce_auth_rate_limit
 from app.services.redis import get_redis
 from app.services.tenant import (
     TenantAccessForbiddenError,
@@ -110,6 +112,57 @@ async def get_current_tenant(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="The business assignment is invalid.",
+        ) from exc
+
+
+async def enforce_ai_rate_limit_dependency(
+    idempotency_key: Annotated[
+        str,
+        Header(
+            alias="Idempotency-Key",
+            min_length=8,
+            max_length=255,
+            pattern=r"^[!-~]+$",
+        ),
+    ],
+    current_user: Annotated[User, Depends(get_current_user)],
+    tenant: Annotated[TenantContext, Depends(get_current_tenant)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    # Keep scalar identifiers before ending the read-only database transaction.
+    business_id = tenant.scope.business_id
+    user_id = current_user.id
+    digest = digest_ai_idempotency_key(idempotency_key)
+    existing = (
+        await session.execute(
+            tenant.scope.select(
+                AIMessage,
+                AIMessage.idempotency_key_digest == digest,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        await session.commit()
+        return
+
+    # This dependency only performed a SELECT. Commit closes the transaction
+    # without expiring objects because the project sessionmaker uses
+    # expire_on_commit=False. A rollback would expire tenant/user instances.
+    await session.commit()
+
+    try:
+        redis = await get_redis()
+        await enforce_ai_rate_limit(
+            redis=redis,
+            settings=settings,
+            business_id=business_id,
+            user_id=user_id,
+        )
+    except RedisError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI service is temporarily unavailable.",
         ) from exc
 
 

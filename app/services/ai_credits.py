@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import func, select
 
 from app.models.ai import AICreditAccount, AICreditLedgerEntry, AICreditLedgerStatus
 from app.models.base import utc_now
@@ -67,6 +68,28 @@ class AICreditLedgerSnapshot:
     released_at: datetime | None
     release_reason: str | None
     replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AICreditUsageSummary:
+    account_id: UUID | None
+    subscription_id: UUID
+    business_id: UUID
+    limit_value: int | None
+    reserved_count: int
+    consumed_count: int
+    remaining: int | None
+    period_started_at: datetime
+    period_ends_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AICreditUsageHistory:
+    current: AICreditUsageSummary
+    items: tuple[AICreditLedgerEntry, ...]
+    total: int
+    limit: int
+    offset: int
 
 
 def digest_ai_idempotency_key(idempotency_key: str) -> str:
@@ -368,3 +391,95 @@ class AICreditService:
         except Exception:
             await self.session.rollback()
             raise
+
+    async def snapshot(
+        self,
+        scope: TenantScope,
+        *,
+        entry_id: UUID,
+        replayed: bool = True,
+    ) -> AICreditLedgerSnapshot:
+        entry = await scope.get(self.session, AICreditLedgerEntry, entry_id)
+        if entry is None:
+            raise AICreditReservationNotFoundError
+        account = await scope.get(self.session, AICreditAccount, entry.account_id)
+        if account is None or account.subscription_id != entry.subscription_id:
+            raise AICreditIntegrityError
+        return self._snapshot(entry, account, replayed=replayed)
+
+    async def usage_history(
+        self,
+        scope: TenantScope,
+        *,
+        limit: int,
+        offset: int,
+        now: datetime | None = None,
+    ) -> AICreditUsageHistory:
+        subscription = await self.entitlements.subscriptions.get_current(scope)
+        if subscription is None:
+            raise SubscriptionRequiredError
+
+        access = self.entitlements.subscriptions.evaluate_access(
+            subscription,
+            now=now,
+        )
+        if not access.active or access.period_started_at is None or access.period_ends_at is None:
+            raise SubscriptionInactiveError(access.reason)
+
+        effective = await self.entitlements.effective_entitlements(scope, subscription)
+        entitlement = next(
+            (item for item in effective if item.key == EntitlementKey.AI_FULL_RESPONSES),
+            None,
+        )
+        if entitlement is None or not entitlement.is_enabled:
+            raise EntitlementDeniedError
+
+        account_result = await self.session.execute(
+            scope.select(
+                AICreditAccount,
+                AICreditAccount.subscription_id == subscription.id,
+                AICreditAccount.entitlement_key == EntitlementKey.AI_FULL_RESPONSES,
+                AICreditAccount.period_started_at == access.period_started_at,
+                AICreditAccount.period_ends_at == access.period_ends_at,
+            )
+        )
+        account = account_result.scalar_one_or_none()
+        reserved_count = account.reserved_count if account is not None else 0
+        consumed_count = account.consumed_count if account is not None else 0
+        used = reserved_count + consumed_count
+        remaining = (
+            None if entitlement.limit_value is None else max(entitlement.limit_value - used, 0)
+        )
+        current = AICreditUsageSummary(
+            account_id=account.id if account is not None else None,
+            subscription_id=subscription.id,
+            business_id=scope.business_id,
+            limit_value=entitlement.limit_value,
+            reserved_count=reserved_count,
+            consumed_count=consumed_count,
+            remaining=remaining,
+            period_started_at=access.period_started_at,
+            period_ends_at=access.period_ends_at,
+        )
+
+        total = await self.session.scalar(
+            select(func.count())
+            .select_from(AICreditLedgerEntry)
+            .where(AICreditLedgerEntry.business_id == scope.business_id)
+        )
+        result = await self.session.execute(
+            scope.select(AICreditLedgerEntry)
+            .order_by(
+                AICreditLedgerEntry.reserved_at.desc(),
+                AICreditLedgerEntry.id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        return AICreditUsageHistory(
+            current=current,
+            items=tuple(result.scalars().all()),
+            total=int(total or 0),
+            limit=limit,
+            offset=offset,
+        )

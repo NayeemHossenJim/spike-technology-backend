@@ -84,6 +84,8 @@ def test_ai_message_schema_contract_is_registered() -> None:
         "reply_to_message_id",
         "idempotency_key_digest",
         "credit_ledger_entry_id",
+        "processing_token",
+        "processing_lease_expires_at",
         "provider_response_id",
         "provider_model",
         "provider_finish_reason",
@@ -114,6 +116,7 @@ def test_ai_message_schema_contract_is_registered() -> None:
         "ck_ai_messages_role_fields",
         "ck_ai_messages_provider_fields",
         "ck_ai_messages_status_fields",
+        "ck_ai_messages_processing_lease",
         "ck_ai_messages_token_counts",
         "ck_ai_messages_completed_at",
     } <= _named(table, CheckConstraint)
@@ -124,6 +127,7 @@ def test_ai_message_schema_contract_is_registered() -> None:
         "ix_ai_messages_credit_ledger_entry_id",
         "ix_ai_messages_business_conversation_created",
         "ix_ai_messages_business_status_created",
+        "ix_ai_messages_business_pending_lease",
     } <= _index_names(table)
 
 
@@ -142,17 +146,20 @@ def test_ai_conversation_and_message_payloads_normalize_and_forbid_extras() -> N
         AIConversationCreate(title="Valid", unexpected=True)
 
 
-def test_ai_message_read_contract_never_exposes_idempotency_digest() -> None:
+def test_ai_message_read_contract_never_exposes_internal_execution_fields() -> None:
     assert "idempotency_key_digest" not in AIMessageRead.model_fields
+    assert "processing_token" not in AIMessageRead.model_fields
+    assert "processing_lease_expires_at" not in AIMessageRead.model_fields
 
 
-def test_stage4_openapi_contract_is_tenant_scoped_and_requires_idempotency() -> None:
+def test_stage5_openapi_contract_exposes_usage_and_execution_responses() -> None:
     schema = create_app().openapi()
     paths = schema["paths"]
 
     assert "/api/v1/ai/conversations" in paths
     assert "/api/v1/ai/conversations/{conversation_id}" in paths
     assert "/api/v1/ai/conversations/{conversation_id}/messages" in paths
+    assert "/api/v1/ai/usage" in paths
 
     submit = paths["/api/v1/ai/conversations/{conversation_id}/messages"]["post"]
     headers = {
@@ -161,6 +168,9 @@ def test_stage4_openapi_contract_is_tenant_scoped_and_requires_idempotency() -> 
         if parameter["in"] == "header"
     }
     assert headers["Idempotency-Key"]["required"] is True
+    assert {"200", "201", "202", "402", "403", "409", "429", "502", "503"} <= set(
+        submit["responses"]
+    )
 
 
 def test_stage4_migration_contract_is_linear_and_complete() -> None:
@@ -177,3 +187,17 @@ def test_stage4_migration_contract_is_linear_and_complete() -> None:
     assert "fk_ai_messages_credit_ledger_business" in migration
     assert "uq_ai_messages_business_idempotency" in migration
     assert "ck_ai_messages_provider_fields" in migration
+
+
+def test_stage5_execution_migration_adds_recoverable_leases() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    migration = (project_root / "alembic" / "versions" / "0011_m5_ai_execution.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'revision: str = "0011_m5_ai_execution"' in migration
+    assert 'down_revision: str | Sequence[str] | None = "0010_m5_ai_conversations"' in migration
+    assert '"processing_token"' in migration
+    assert '"processing_lease_expires_at"' in migration
+    assert "ck_ai_messages_processing_lease" in migration
+    assert "ix_ai_messages_business_pending_lease" in migration

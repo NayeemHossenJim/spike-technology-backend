@@ -24,3 +24,15 @@ Milestone 5 adds tenant-scoped AI requests backed by Google Gemini and an audita
 - Stage 3: Gemini gateway abstraction, configuration, and test double.
 - Stage 4: conversation/message persistence and tenant-scoped API.
 - Stage 5: end-to-end provider execution, usage history, rate limiting, logging, and failure mapping.
+## Stage 5 execution contract
+
+1. A user message is durably persisted before credit reservation begins.
+2. A recoverable database lease ensures only one active provider call owns an idempotent request.
+3. Gemini is called only after all database transactions and row locks are closed.
+4. A valid response, assistant message, user-message completion, and credit consumption are committed atomically.
+5. Provider failures, safety blocks, timeouts, rejected requests, invalid responses, and oversized responses release the reservation.
+6. Replaying a completed key returns the same assistant message without a second provider call.
+7. Replaying an active request returns HTTP 202 until the current execution completes or its lease expires.
+8. Replaying a failed key returns the same classified failure; a new attempt requires a new idempotency key.
+9. Usage history exposes balances and ledger states without exposing raw idempotency digests or processing tokens.
+10. Logs contain controlled identifiers and provider metadata, never raw prompts or financial rows.

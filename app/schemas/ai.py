@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.models.ai import (
     AI_CONVERSATION_TITLE_MAX_LENGTH,
     AI_MESSAGE_CONTENT_MAX_LENGTH,
+    AICreditLedgerStatus,
     AIMessageRole,
     AIMessageStatus,
 )
@@ -95,8 +96,41 @@ class AIMessagePageRead(BaseModel):
     offset: int
 
 
+class AICreditUsageSummaryRead(BaseModel):
+    account_id: UUID | None
+    subscription_id: UUID
+    business_id: UUID
+    limit_value: int | None
+    reserved_count: int
+    consumed_count: int
+    remaining: int | None
+    period_started_at: datetime
+    period_ends_at: datetime
+
+
+class AICreditLedgerEntryRead(BaseModel):
+    id: UUID
+    account_id: UUID
+    subscription_id: UUID
+    status: AICreditLedgerStatus
+    quantity: int
+    reserved_at: datetime
+    consumed_at: datetime | None
+    released_at: datetime | None
+    release_reason: str | None
+
+
+class AIUsageHistoryRead(BaseModel):
+    current: AICreditUsageSummaryRead
+    items: list[AICreditLedgerEntryRead]
+    total: int
+    limit: int
+    offset: int
+
+
 class AIMessageSubmissionRead(BaseModel):
     conversation: AIConversationRead
     user_message: AIMessageRead
     assistant_message: AIMessageRead | None = None
+    usage: AICreditUsageSummaryRead | None = None
     replayed: bool
