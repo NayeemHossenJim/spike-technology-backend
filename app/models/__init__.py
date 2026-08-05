@@ -1,3 +1,8 @@
+from app.models.ai import (
+    AICreditAccount,
+    AICreditLedgerEntry,
+    AICreditLedgerStatus,
+)
 from app.models.auth import EmailVerificationOTP, PasswordResetOTP, RefreshToken
 from app.models.billing import (
     BillingCheckoutSession,
@@ -38,6 +43,9 @@ from app.models.upload import (
 from app.models.user import Industry, JobRole, User, UserRole
 
 __all__ = [
+    "AICreditAccount",
+    "AICreditLedgerEntry",
+    "AICreditLedgerStatus",
     "AI_FULL_RESPONSES_PER_PERIOD",
     "Business",
     "BillingCheckoutSession",
