@@ -82,12 +82,23 @@ class Settings(BaseSettings):
     stripe_checkout_session_minutes: int = 60
     stripe_webhook_tolerance_seconds: int = 300
 
+    gemini_enabled: bool = False
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-3.6-flash"
+    gemini_request_timeout_seconds: int = 60
+    gemini_max_output_tokens: int = 4096
+
     @field_validator("cors_origins", "trusted_hosts", mode="before")
     @classmethod
     def parse_list_setting(cls, value: str | list[str]) -> list[str]:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("gemini_model", mode="before")
+    @classmethod
+    def normalize_gemini_model(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("s3_upload_bucket", mode="before")
     @classmethod
@@ -119,6 +130,24 @@ class Settings(BaseSettings):
             raise ValueError("STRIPE_CHECKOUT_SESSION_MINUTES must be between 31 and 1439")
         if not 60 <= self.stripe_webhook_tolerance_seconds <= 900:
             raise ValueError("STRIPE_WEBHOOK_TOLERANCE_SECONDS must be between 60 and 900")
+        if (
+            not self.gemini_model
+            or len(self.gemini_model) > 128
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", self.gemini_model)
+        ):
+            raise ValueError("GEMINI_MODEL is invalid")
+        if not 5 <= self.gemini_request_timeout_seconds <= 300:
+            raise ValueError("GEMINI_REQUEST_TIMEOUT_SECONDS must be between 5 and 300")
+        if not 128 <= self.gemini_max_output_tokens <= 65536:
+            raise ValueError("GEMINI_MAX_OUTPUT_TOKENS must be between 128 and 65536")
+        if self.gemini_enabled:
+            gemini_key = (
+                self.gemini_api_key.get_secret_value().strip()
+                if self.gemini_api_key is not None
+                else ""
+            )
+            if not gemini_key:
+                raise ValueError("GEMINI_API_KEY is required when Gemini AI is enabled")
         self.terms_version = self.terms_version.strip()
         if not self.terms_version:
             raise ValueError("TERMS_VERSION cannot be empty")
