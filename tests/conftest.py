@@ -58,10 +58,18 @@ os.environ["CORS_ORIGINS"] = "http://localhost:3000"
 os.environ["TRUSTED_HOSTS"] = "localhost,127.0.0.1,testserver"
 
 import app.models  # noqa: E402,F401
-from app.api.deps import enforce_auth_rate_limit_dependency  # noqa: E402
+from app.api.deps import (  # noqa: E402
+    enforce_ai_rate_limit_dependency,
+    enforce_auth_rate_limit_dependency,
+)
 from app.db.session import get_session  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.services.email import get_email_sender  # noqa: E402
+from app.services.gemini_gateway import (  # noqa: E402
+    GeminiGatewayError,
+    GeminiGeneration,
+    get_gemini_gateway,
+)
 from app.services.processing_dispatch import (  # noqa: E402
     ReportProcessingDispatchError,
     get_report_processing_dispatcher,
@@ -97,6 +105,42 @@ class InMemoryReportProcessingDispatcher:
         self.dispatched_job_ids.append(job_id)
 
 
+@dataclass
+class InMemoryGeminiGateway:
+    calls: list[tuple[str, str | None]] = field(default_factory=list)
+    failure: GeminiGatewayError | None = None
+    block: bool = False
+    started: asyncio.Event = field(default_factory=asyncio.Event)
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def generate(
+        self,
+        *,
+        prompt: str,
+        system_instruction: str | None = None,
+    ) -> GeminiGeneration:
+        self.calls.append((prompt, system_instruction))
+        self.started.set()
+        if self.block:
+            await self.release.wait()
+        if self.failure is not None:
+            raise self.failure
+        sequence = len(self.calls)
+        return GeminiGeneration(
+            text=f"Deterministic AI response {sequence}.",
+            provider_response_id=f"test-response-{sequence:04d}",
+            model_version="gemini-test-model",
+            finish_reason="STOP",
+            prompt_token_count=20,
+            response_token_count=8,
+            thoughts_token_count=2,
+            total_token_count=30,
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
 @pytest.fixture
 def email_sender() -> InMemoryEmailSender:
     return InMemoryEmailSender()
@@ -105,6 +149,11 @@ def email_sender() -> InMemoryEmailSender:
 @pytest.fixture
 def processing_dispatcher() -> InMemoryReportProcessingDispatcher:
     return InMemoryReportProcessingDispatcher()
+
+
+@pytest.fixture
+def gemini_gateway() -> InMemoryGeminiGateway:
+    return InMemoryGeminiGateway()
 
 
 @pytest_asyncio.fixture
@@ -158,6 +207,7 @@ def app(
     session_factory: async_sessionmaker[AsyncSession],
     email_sender: InMemoryEmailSender,
     processing_dispatcher: InMemoryReportProcessingDispatcher,
+    gemini_gateway: InMemoryGeminiGateway,
 ):
     test_app = create_app()
 
@@ -171,7 +221,9 @@ def app(
     test_app.dependency_overrides[get_session] = override_session
     test_app.dependency_overrides[get_email_sender] = lambda: email_sender
     test_app.dependency_overrides[get_report_processing_dispatcher] = lambda: processing_dispatcher
+    test_app.dependency_overrides[get_gemini_gateway] = lambda: gemini_gateway
     test_app.dependency_overrides[enforce_auth_rate_limit_dependency] = no_rate_limit
+    test_app.dependency_overrides[enforce_ai_rate_limit_dependency] = no_rate_limit
     yield test_app
     test_app.dependency_overrides.clear()
 

@@ -1,3 +1,14 @@
+from app.models.ai import (
+    AI_CONVERSATION_TITLE_MAX_LENGTH,
+    AI_MESSAGE_CONTENT_MAX_LENGTH,
+    AIConversation,
+    AICreditAccount,
+    AICreditLedgerEntry,
+    AICreditLedgerStatus,
+    AIMessage,
+    AIMessageRole,
+    AIMessageStatus,
+)
 from app.models.auth import EmailVerificationOTP, PasswordResetOTP, RefreshToken
 from app.models.billing import (
     BillingCheckoutSession,
@@ -38,6 +49,15 @@ from app.models.upload import (
 from app.models.user import Industry, JobRole, User, UserRole
 
 __all__ = [
+    "AI_CONVERSATION_TITLE_MAX_LENGTH",
+    "AI_MESSAGE_CONTENT_MAX_LENGTH",
+    "AIConversation",
+    "AIMessage",
+    "AIMessageRole",
+    "AIMessageStatus",
+    "AICreditAccount",
+    "AICreditLedgerEntry",
+    "AICreditLedgerStatus",
     "AI_FULL_RESPONSES_PER_PERIOD",
     "Business",
     "BillingCheckoutSession",

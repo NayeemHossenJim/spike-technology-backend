@@ -1222,6 +1222,7 @@ dependencies = [
     { name = "defusedxml" },
     { name = "email-validator" },
     { name = "fastapi" },
+    { name = "google-genai" },
     { name = "olefile" },
     { name = "openpyxl" },
     { name = "pwdlib", extra = ["argon2"] },
@@ -1243,7 +1244,6 @@ dev = [
     { name = "ruff" },
 ]
 phase2 = [
-    { name = "google-genai" },
     { name = "pandas" },
 ]
 phase3 = [
@@ -1260,7 +1260,7 @@ requires-dist = [
     { name = "defusedxml", specifier = ">=0.7,<1.0" },
     { name = "email-validator", specifier = ">=2.2,<3.0" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
-    { name = "google-genai", marker = "extra == 'phase2'", specifier = ">=1.0,<2.0" },
+    { name = "google-genai", specifier = ">=1.0,<2.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28,<1.0" },
     { name = "olefile", specifier = ">=0.47,<0.48" },
     { name = "openpyxl", specifier = ">=3.1,<4.0" },

@@ -200,7 +200,7 @@ class EntitlementService:
         self.session = session
         self.subscriptions = SubscriptionService(session)
 
-    async def _effective_entitlements(
+    async def effective_entitlements(
         self,
         scope: TenantScope,
         subscription: Subscription,
@@ -244,7 +244,7 @@ class EntitlementService:
         return EntitlementSummary(
             subscription=subscription,
             access=self.subscriptions.evaluate_access(subscription),
-            entitlements=await self._effective_entitlements(scope, subscription),
+            entitlements=await self.effective_entitlements(scope, subscription),
         )
 
     async def require(
