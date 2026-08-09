@@ -128,9 +128,9 @@ class DashboardUpdate(BaseModel):
 
     @field_validator("title")
     @classmethod
-    def validate_title(cls, value: str | None) -> str | None:
+    def validate_title(cls, value: str | None) -> str:
         if value is None:
-            return None
+            raise ValueError("Dashboard title cannot be null.")
         return normalize_dashboard_title(value)
 
     @field_validator("configuration")
@@ -138,14 +138,14 @@ class DashboardUpdate(BaseModel):
     def validate_configuration(
         cls,
         value: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         if value is None:
-            return None
+            raise ValueError("Dashboard configuration cannot be null.")
         return validate_dashboard_configuration(value)
 
     @model_validator(mode="after")
     def require_change(self) -> DashboardUpdate:
-        if self.title is None and self.configuration is None:
+        if not self.model_fields_set:
             raise ValueError("At least one dashboard field must be updated.")
         return self
 
@@ -161,6 +161,13 @@ class DashboardRead(BaseModel):
     configuration: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+
+
+class DashboardPageRead(BaseModel):
+    items: list[DashboardRead]
+    total: int
+    limit: int
+    offset: int
 
 
 class DashboardSnapshotRead(BaseModel):
