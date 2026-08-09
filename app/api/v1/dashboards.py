@@ -20,6 +20,15 @@ from app.schemas.dashboard import (
     DashboardSnapshotSourceRead,
     DashboardUpdate,
 )
+from app.services.dashboard_pdf import (
+    DashboardPDFDashboardNotFoundError,
+    DashboardPDFRenderer,
+    DashboardPDFRendererError,
+    DashboardPDFRendererUnavailableError,
+    DashboardPDFService,
+    DashboardPDFSnapshotNotFoundError,
+    get_dashboard_pdf_renderer,
+)
 from app.services.dashboard_snapshots import (
     DashboardSnapshotArtifactError,
     DashboardSnapshotConflictError,
@@ -360,4 +369,72 @@ async def list_dashboard_snapshots(
         total=page.total,
         limit=page.limit,
         offset=page.offset,
+    )
+
+
+@router.get(
+    "/{dashboard_id}/export/pdf",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "Latest immutable dashboard snapshot as PDF.",
+            "content": {
+                "application/pdf": {},
+            },
+        },
+        404: {
+            "description": "Dashboard or dashboard snapshot not found.",
+        },
+        503: {
+            "description": "PDF renderer unavailable.",
+        },
+    },
+)
+async def export_dashboard_pdf(
+    dashboard_id: UUID,
+    tenant: Annotated[
+        TenantContext,
+        Depends(require_tenant_roles(TenantRole.OWNER)),
+    ],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    renderer: Annotated[
+        DashboardPDFRenderer,
+        Depends(get_dashboard_pdf_renderer),
+    ],
+) -> Response:
+    try:
+        exported = await DashboardPDFService(
+            session,
+            renderer=renderer,
+        ).export_latest(
+            tenant.scope,
+            dashboard_id,
+            business_name=tenant.business.name,
+            business_industry=tenant.business.industry,
+        )
+    except DashboardPDFDashboardNotFoundError as exc:
+        raise _not_found() from exc
+    except DashboardPDFSnapshotNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dashboard snapshot not found.",
+        ) from exc
+    except (
+        DashboardPDFRendererUnavailableError,
+        DashboardPDFRendererError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Dashboard PDF export is temporarily unavailable.",
+        ) from exc
+
+    return Response(
+        content=exported.content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (f'attachment; filename="{exported.filename}"'),
+            "Cache-Control": "private, no-store",
+            "X-Dashboard-Snapshot-Version": str(exported.snapshot_version),
+            "X-Dashboard-Snapshot-Hash": (exported.snapshot_content_hash),
+        },
     )
