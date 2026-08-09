@@ -13,12 +13,31 @@ from app.schemas.dashboard import (
     DashboardCreate,
     DashboardPageRead,
     DashboardRead,
+    DashboardSnapshotCreate,
+    DashboardSnapshotDetailRead,
+    DashboardSnapshotPageRead,
+    DashboardSnapshotRead,
+    DashboardSnapshotSourceRead,
     DashboardUpdate,
+)
+from app.services.dashboard_snapshots import (
+    DashboardSnapshotArtifactError,
+    DashboardSnapshotConflictError,
+    DashboardSnapshotMaterialization,
+    DashboardSnapshotNotFoundError,
+    DashboardSnapshotService,
+    DashboardSnapshotSourceNotFoundError,
+    DashboardSnapshotSourceNotReadyError,
+    DashboardSnapshotStorageError,
 )
 from app.services.dashboards import (
     DashboardConflictError,
     DashboardNotFoundError,
     DashboardService,
+)
+from app.services.s3_storage import (
+    S3UploadGateway,
+    get_s3_upload_gateway,
 )
 from app.services.subscriptions import (
     EntitlementDeniedError,
@@ -42,6 +61,15 @@ def _conflict() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail="The dashboard operation could not be completed safely.",
+    )
+
+
+def _snapshot_detail(
+    result: DashboardSnapshotMaterialization,
+) -> DashboardSnapshotDetailRead:
+    return DashboardSnapshotDetailRead(
+        **DashboardSnapshotRead.model_validate(result.snapshot).model_dump(),
+        sources=[DashboardSnapshotSourceRead.model_validate(source) for source in result.sources],
     )
 
 
@@ -195,3 +223,141 @@ async def delete_dashboard(
         raise _conflict() from exc
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/{dashboard_id}/snapshots",
+    response_model=DashboardSnapshotDetailRead,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        200: {"description": "Identical snapshot replay."},
+        404: {"description": "Dashboard or source not found."},
+        409: {"description": "Source is not ready or changed."},
+        503: {"description": "Processed artifact storage unavailable."},
+    },
+)
+async def materialize_dashboard_snapshot(
+    dashboard_id: UUID,
+    payload: DashboardSnapshotCreate,
+    response: Response,
+    tenant: Annotated[
+        TenantContext,
+        Depends(require_tenant_roles(TenantRole.OWNER)),
+    ],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    storage: Annotated[
+        S3UploadGateway,
+        Depends(get_s3_upload_gateway),
+    ],
+) -> DashboardSnapshotDetailRead:
+    try:
+        result = await DashboardSnapshotService(
+            session,
+            storage=storage,
+        ).materialize(
+            tenant.scope,
+            dashboard_id,
+            created_by_user_id=tenant.role_assignment.user_id,
+            source_processing_job_ids=tuple(payload.source_processing_job_ids),
+        )
+    except DashboardSnapshotNotFoundError as exc:
+        raise _not_found() from exc
+    except DashboardSnapshotSourceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dashboard source not found.",
+        ) from exc
+    except DashboardSnapshotSourceNotReadyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=("Dashboard sources must be completed report-processing jobs."),
+        ) from exc
+    except DashboardSnapshotArtifactError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Processed report data is invalid or inconsistent.",
+        ) from exc
+    except DashboardSnapshotStorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Processed report data is temporarily unavailable.",
+        ) from exc
+    except DashboardSnapshotConflictError as exc:
+        raise _conflict() from exc
+
+    if result.replayed:
+        response.status_code = status.HTTP_200_OK
+
+    return _snapshot_detail(result)
+
+
+@router.get(
+    "/{dashboard_id}/snapshots/latest",
+    response_model=DashboardSnapshotDetailRead,
+)
+async def read_latest_dashboard_snapshot(
+    dashboard_id: UUID,
+    tenant: Annotated[
+        TenantContext,
+        Depends(require_tenant_roles(TenantRole.OWNER)),
+    ],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    storage: Annotated[
+        S3UploadGateway,
+        Depends(get_s3_upload_gateway),
+    ],
+) -> DashboardSnapshotDetailRead:
+    try:
+        result = await DashboardSnapshotService(
+            session,
+            storage=storage,
+        ).latest(
+            tenant.scope,
+            dashboard_id,
+        )
+    except DashboardSnapshotNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dashboard snapshot not found.",
+        ) from exc
+
+    return _snapshot_detail(result)
+
+
+@router.get(
+    "/{dashboard_id}/snapshots",
+    response_model=DashboardSnapshotPageRead,
+)
+async def list_dashboard_snapshots(
+    dashboard_id: UUID,
+    tenant: Annotated[
+        TenantContext,
+        Depends(require_tenant_roles(TenantRole.OWNER)),
+    ],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    storage: Annotated[
+        S3UploadGateway,
+        Depends(get_s3_upload_gateway),
+    ],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+) -> DashboardSnapshotPageRead:
+    try:
+        page = await DashboardSnapshotService(
+            session,
+            storage=storage,
+        ).list(
+            tenant.scope,
+            dashboard_id,
+            limit=limit,
+            offset=offset,
+        )
+    except DashboardSnapshotNotFoundError as exc:
+        raise _not_found() from exc
+
+    return DashboardSnapshotPageRead(
+        items=[DashboardSnapshotRead.model_validate(item) for item in page.items],
+        total=page.total,
+        limit=page.limit,
+        offset=page.offset,
+    )

@@ -170,6 +170,25 @@ class DashboardPageRead(BaseModel):
     offset: int
 
 
+class DashboardSnapshotCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_processing_job_ids: list[UUID] = Field(
+        min_length=1,
+        max_length=20,
+    )
+
+    @field_validator("source_processing_job_ids")
+    @classmethod
+    def validate_unique_sources(
+        cls,
+        value: list[UUID],
+    ) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("Dashboard snapshot sources must be unique.")
+        return value
+
+
 class DashboardSnapshotRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -182,6 +201,13 @@ class DashboardSnapshotRead(BaseModel):
     content_hash: str
     created_by_user_id: UUID
     created_at: datetime
+
+
+class DashboardSnapshotPageRead(BaseModel):
+    items: list[DashboardSnapshotRead]
+    total: int
+    limit: int
+    offset: int
 
 
 class DashboardSnapshotSourceRead(BaseModel):
@@ -197,3 +223,7 @@ class DashboardSnapshotSourceRead(BaseModel):
     profile_storage_version_id: str
     profile_etag: str
     created_at: datetime
+
+
+class DashboardSnapshotDetailRead(DashboardSnapshotRead):
+    sources: list[DashboardSnapshotSourceRead]
