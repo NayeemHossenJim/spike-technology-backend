@@ -111,3 +111,35 @@ The lifecycle contract is:
 
 Migration 0014 introduces `users.auth_session_version` as the durable
 authentication generation used to invalidate stateless access tokens safely.
+
+
+## Stage 4 ? Subscription and tenant operations
+
+Stage 4 begins with read-only subscription visibility.
+
+`GET /api/v1/admin/businesses/{business_id}/subscription` is available to
+Super Admin and Customer Service for support diagnostics.
+
+The response may expose:
+
+- local subscription status;
+- safe Plan identity and published pricing metadata;
+- trial and current billing-period timestamps;
+- scheduled cancellation state;
+- whether the subscription is Stripe-managed;
+- last successful Stripe synchronization timestamp;
+- evaluated subscription access state;
+- effective entitlement keys, limits, and sources.
+
+The support response must not expose Stripe Customer IDs, Stripe Subscription
+IDs, Stripe Price IDs, webhook identifiers, payment methods, card data, hosted
+invoice URLs, invoice PDF URLs, or raw Stripe payloads.
+
+Paid subscription lifecycle state remains Stripe-authoritative. Admin support
+code must not directly edit Stripe-synchronized subscription fields.
+
+Customer Service remains read-only for all subscription operations.
+
+Any future Super Admin subscription mutation must reuse the Stripe gateway and
+subscription synchronizer, write an immutable admin audit event, and must not
+introduce an independent local source of subscription truth.

@@ -21,6 +21,10 @@ from app.schemas.admin import (
     AdminAccountActionRequest,
     AdminBusinessPageRead,
     AdminBusinessRead,
+    AdminEffectiveEntitlementRead,
+    AdminPlanRead,
+    AdminSubscriptionAccessRead,
+    AdminSubscriptionRead,
     AdminUserPageRead,
     AdminUserRead,
 )
@@ -30,6 +34,12 @@ from app.services.admin_accounts import (
     AdminAccountService,
     AdminAccountTargetForbiddenError,
     AdminAccountTargetNotFoundError,
+)
+from app.services.admin_subscriptions import (
+    AdminBusinessNotFoundError,
+    AdminBusinessSubscriptionNotFoundError,
+    AdminSubscriptionRecord,
+    AdminSubscriptionService,
 )
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -66,6 +76,58 @@ def _business_read(item: AdminBusinessRecord) -> AdminBusinessRead:
         role_assignment_is_active=item.role_assignment.is_active,
         created_at=item.business.created_at,
         updated_at=item.business.updated_at,
+    )
+
+
+def _subscription_read(
+    item: AdminSubscriptionRecord,
+) -> AdminSubscriptionRead:
+    subscription = item.subscription
+
+    plan = (
+        AdminPlanRead(
+            id=item.plan.id,
+            code=item.plan.code,
+            name=item.plan.name,
+            monthly_price_cents=item.plan.monthly_price_cents,
+            currency=item.plan.currency,
+            is_custom_pricing=item.plan.is_custom_pricing,
+        )
+        if item.plan is not None
+        else None
+    )
+
+    return AdminSubscriptionRead(
+        id=subscription.id,
+        business_id=subscription.business_id,
+        plan=plan,
+        status=subscription.status,
+        trial_started_at=subscription.trial_started_at,
+        trial_ends_at=subscription.trial_ends_at,
+        current_period_started_at=(subscription.current_period_started_at),
+        current_period_ends_at=subscription.current_period_ends_at,
+        cancel_at_period_end=subscription.cancel_at_period_end,
+        canceled_at=subscription.canceled_at,
+        ended_at=subscription.ended_at,
+        stripe_managed=(subscription.stripe_subscription_id is not None),
+        last_stripe_synced_at=subscription.last_stripe_synced_at,
+        access=AdminSubscriptionAccessRead(
+            active=item.access.active,
+            reason=item.access.reason,
+            period_started_at=item.access.period_started_at,
+            period_ends_at=item.access.period_ends_at,
+        ),
+        entitlements=[
+            AdminEffectiveEntitlementRead(
+                key=entitlement.key,
+                is_enabled=entitlement.is_enabled,
+                limit_value=entitlement.limit_value,
+                source=entitlement.source,
+            )
+            for entitlement in item.entitlements
+        ],
+        created_at=subscription.created_at,
+        updated_at=subscription.updated_at,
     )
 
 
@@ -156,6 +218,31 @@ async def list_admin_businesses(
         limit=result.limit,
         offset=result.offset,
     )
+
+
+@router.get(
+    "/businesses/{business_id}/subscription",
+    response_model=AdminSubscriptionRead,
+)
+async def read_admin_business_subscription(
+    business_id: UUID,
+    _: PlatformSupportUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AdminSubscriptionRead:
+    try:
+        result = await AdminSubscriptionService(session).get_latest(
+            business_id=business_id,
+        )
+    except (
+        AdminBusinessNotFoundError,
+        AdminBusinessSubscriptionNotFoundError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Business subscription not found.",
+        ) from exc
+
+    return _subscription_read(result)
 
 
 @router.post(

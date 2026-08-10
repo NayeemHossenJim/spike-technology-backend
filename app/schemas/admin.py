@@ -7,6 +7,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 from app.models.business import TenantRole
+from app.models.subscription import (
+    EntitlementKey,
+    EntitlementSource,
+    SubscriptionStatus,
+)
 from app.models.user import Industry, UserRole
 
 
@@ -66,3 +71,52 @@ class AdminAccountActionRead(BaseModel):
     user: AdminUserRead
     changed: bool
     sessions_revoked: int
+
+
+class AdminPlanRead(BaseModel):
+    id: UUID
+    code: str
+    name: str
+    monthly_price_cents: int | None
+    currency: str
+    is_custom_pricing: bool
+
+
+class AdminSubscriptionAccessRead(BaseModel):
+    active: bool
+    reason: str
+    period_started_at: datetime | None
+    period_ends_at: datetime | None
+
+
+class AdminEffectiveEntitlementRead(BaseModel):
+    key: EntitlementKey
+    is_enabled: bool
+    limit_value: int | None
+    source: EntitlementSource
+
+
+class AdminSubscriptionRead(BaseModel):
+    id: UUID
+    business_id: UUID
+    plan: AdminPlanRead | None
+    status: SubscriptionStatus
+
+    trial_started_at: datetime | None
+    trial_ends_at: datetime | None
+
+    current_period_started_at: datetime | None
+    current_period_ends_at: datetime | None
+
+    cancel_at_period_end: bool
+    canceled_at: datetime | None
+    ended_at: datetime | None
+
+    stripe_managed: bool
+    last_stripe_synced_at: datetime | None
+
+    access: AdminSubscriptionAccessRead
+    entitlements: list[AdminEffectiveEntitlementRead]
+
+    created_at: datetime
+    updated_at: datetime
