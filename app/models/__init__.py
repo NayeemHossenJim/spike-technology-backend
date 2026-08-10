@@ -1,3 +1,8 @@
+from app.models.admin import (
+    ADMIN_AUDIT_LABEL_MAX_LENGTH,
+    ADMIN_AUDIT_REQUEST_ID_MAX_LENGTH,
+    AdminAuditEvent,
+)
 from app.models.ai import (
     AI_CONVERSATION_TITLE_MAX_LENGTH,
     AI_MESSAGE_CONTENT_MAX_LENGTH,
@@ -57,6 +62,9 @@ from app.models.upload import (
 from app.models.user import Industry, JobRole, User, UserRole
 
 __all__ = [
+    "ADMIN_AUDIT_LABEL_MAX_LENGTH",
+    "ADMIN_AUDIT_REQUEST_ID_MAX_LENGTH",
+    "AdminAuditEvent",
     "AI_CONVERSATION_TITLE_MAX_LENGTH",
     "AI_MESSAGE_CONTENT_MAX_LENGTH",
     "AIConversation",

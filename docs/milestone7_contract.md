@@ -52,3 +52,34 @@ cannot perform Super Admin actions.
 
 No Stage 1 endpoint performs customer financial-data retrieval or privileged
 state mutation.
+
+## Stage 2 ? Administrative audit foundation
+
+Privileged administrative mutations must be auditable before they are exposed.
+
+Audit events are append-only and record:
+
+- authenticated platform actor ID;
+- actor role at the time of the action;
+- normalized action and target type;
+- immutable target UUID;
+- optional business UUID;
+- validated request ID;
+- bounded, JSON-compatible safe metadata;
+- creation timestamp.
+
+Audit rows do not use cascading foreign keys because historical evidence must
+survive later lifecycle changes to users, businesses, or targets.
+
+The database rejects UPDATE and DELETE operations on audit rows.
+
+The audit service flushes but does not commit. A privileged mutation and its
+audit event must therefore share one transaction: both commit, or both roll
+back.
+
+Audit metadata must never contain credentials, passwords, OTPs, authorization
+tokens, secrets, raw payloads, uploaded file contents, AI prompts, or message
+contents.
+
+No high-risk administrative mutation endpoint may be added until this audit
+foundation passes unit, migration, and PostgreSQL integration validation.
