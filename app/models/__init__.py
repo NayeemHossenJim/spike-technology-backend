@@ -8,6 +8,8 @@ from app.models.ai import (
     AI_MESSAGE_CONTENT_MAX_LENGTH,
     AIConversation,
     AICreditAccount,
+    AICreditAdjustmentLedgerEntry,
+    AICreditAdjustmentReason,
     AICreditLedgerEntry,
     AICreditLedgerStatus,
     AIMessage,
@@ -117,4 +119,6 @@ __all__ = [
     "TenantRole",
     "User",
     "UserRole",
+    "AICreditAdjustmentLedgerEntry",
+    "AICreditAdjustmentReason",
 ]

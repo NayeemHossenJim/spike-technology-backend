@@ -31,6 +31,14 @@ class AICreditLedgerStatus(StrEnum):
     RELEASED = "released"
 
 
+class AICreditAdjustmentReason(StrEnum):
+    SUPPORT_CREDIT = "support_credit"
+    SERVICE_RECOVERY = "service_recovery"
+    BILLING_CORRECTION = "billing_correction"
+    ADMINISTRATIVE_CORRECTION = "administrative_correction"
+    FRAUD_REVERSAL = "fraud_reversal"
+
+
 class AIMessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
@@ -231,6 +239,124 @@ class AICreditLedgerEntry(
     release_reason: str | None = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),
+    )
+
+
+class AICreditAdjustmentLedgerEntry(
+    TenantOwnedModel,
+    UUIDPrimaryKey,
+    TimestampedModel,
+    table=True,
+):
+    __tablename__ = "ai_credit_adjustment_ledger_entries"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["account_id", "business_id", "subscription_id"],
+            [
+                "ai_credit_accounts.id",
+                "ai_credit_accounts.business_id",
+                "ai_credit_accounts.subscription_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_ai_credit_adjustments_account_business_subscription",
+        ),
+        UniqueConstraint(
+            "business_id",
+            "idempotency_key_digest",
+            name="uq_ai_credit_adjustments_business_idempotency",
+        ),
+        CheckConstraint(
+            "entitlement_key = 'ai_full_responses'",
+            name="ck_ai_credit_adjustments_entitlement_key",
+        ),
+        CheckConstraint(
+            "delta <> 0 AND delta BETWEEN -1000 AND 1000",
+            name="ck_ai_credit_adjustments_delta",
+        ),
+        CheckConstraint(
+            "reason_code IN ("
+            "'support_credit', "
+            "'service_recovery', "
+            "'billing_correction', "
+            "'administrative_correction', "
+            "'fraud_reversal'"
+            ")",
+            name="ck_ai_credit_adjustments_reason",
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key_digest) = 64",
+            name="ck_ai_credit_adjustments_idempotency_digest",
+        ),
+        CheckConstraint(
+            "base_limit_value >= 0 AND effective_limit_before >= 0 AND effective_limit_after >= 0",
+            name="ck_ai_credit_adjustments_nonnegative_limits",
+        ),
+        CheckConstraint(
+            "effective_limit_after = effective_limit_before + delta",
+            name="ck_ai_credit_adjustments_limit_math",
+        ),
+        CheckConstraint(
+            "reserved_count >= 0 AND consumed_count >= 0 "
+            "AND effective_limit_before >= reserved_count + consumed_count "
+            "AND effective_limit_after >= reserved_count + consumed_count",
+            name="ck_ai_credit_adjustments_usage_floor",
+        ),
+        Index(
+            "ix_ai_credit_adjustments_account_adjusted",
+            "account_id",
+            "adjusted_at",
+            "id",
+        ),
+        Index(
+            "ix_ai_credit_adjustments_business_adjusted",
+            "business_id",
+            "adjusted_at",
+            "id",
+        ),
+        Index(
+            "ix_ai_credit_adjustments_actor_adjusted",
+            "actor_user_id",
+            "adjusted_at",
+            "id",
+        ),
+    )
+
+    account_id: UUID = Field(nullable=False, index=True)
+    subscription_id: UUID = Field(nullable=False, index=True)
+    entitlement_key: EntitlementKey = Field(
+        sa_column=Column(String(64), nullable=False),
+    )
+    actor_user_id: UUID = Field(nullable=False)
+    idempotency_key_digest: str = Field(
+        sa_column=Column(String(64), nullable=False),
+    )
+    delta: int = Field(
+        sa_column=Column(Integer, nullable=False),
+    )
+    reason_code: AICreditAdjustmentReason = Field(
+        sa_column=Column(String(64), nullable=False),
+    )
+    request_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True),
+    )
+    base_limit_value: int = Field(
+        sa_column=Column(Integer, nullable=False),
+    )
+    effective_limit_before: int = Field(
+        sa_column=Column(Integer, nullable=False),
+    )
+    effective_limit_after: int = Field(
+        sa_column=Column(Integer, nullable=False),
+    )
+    reserved_count: int = Field(
+        sa_column=Column(Integer, nullable=False),
+    )
+    consumed_count: int = Field(
+        sa_column=Column(Integer, nullable=False),
+    )
+    adjusted_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
 

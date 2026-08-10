@@ -143,3 +143,68 @@ Customer Service remains read-only for all subscription operations.
 Any future Super Admin subscription mutation must reuse the Stripe gateway and
 subscription synchronizer, write an immutable admin audit event, and must not
 introduce an independent local source of subscription truth.
+
+
+## Stage 5 ? Controlled AI credit adjustments
+
+The existing `ai_credit_ledger_entries` table remains the immutable reservation
+state machine for one AI response: reserved, consumed, or released. Admin credit
+adjustments must not overload or weaken those lifecycle invariants.
+
+Administrative grants and reductions use the dedicated append-only
+`ai_credit_adjustment_ledger_entries` ledger.
+
+Adjustment rules:
+
+- only the current subscription and access period may be adjusted;
+- adjustments apply only to the `ai_full_responses` entitlement;
+- the effective period limit is the entitlement limit plus the immutable sum of
+  adjustment deltas for that credit account;
+- `AICreditAccount.limit_value` is a materialized effective ceiling and is not
+  an independent source of truth;
+- negative adjustments must never reduce the effective limit below
+  `reserved_count + consumed_count`;
+- consequently an administrator cannot revoke credits already reserved by an
+  in-flight AI execution or credits already consumed;
+- unlimited entitlements cannot receive numeric credit adjustments;
+- adjustment rows are append-only at the database layer;
+- raw idempotency keys must never be persisted;
+- every privileged adjustment must later be paired with an immutable admin audit
+  event in the same transaction;
+- Customer Service remains read-only and cannot create adjustments.
+
+Migration `0015_m7_ai_credit_adjustments` introduces the adjustment ledger
+without changing the existing reserved/consumed/released reservation statuses.
+
+
+### Stage 5 privileged adjustment API
+
+`POST /api/v1/admin/businesses/{business_id}/ai-credits/adjustments`
+is a Super Admin-only mutation.
+
+Each request requires:
+
+- a non-zero signed `delta` between -1000 and 1000;
+- a closed adjustment reason code;
+- an `Idempotency-Key` header.
+
+The API guarantees:
+
+- Customer Service and customer users receive no mutation capability;
+- the raw idempotency key is never stored;
+- replaying the same key and payload returns the original adjustment;
+- reusing the same key for a different adjustment is rejected;
+- adjustments are serialized per business;
+- no negative adjustment can reduce the effective limit below
+  reserved plus consumed usage;
+- positive and negative adjustments derive from the immutable adjustment
+  ledger rather than arbitrary account counter edits;
+- the materialized account limit is updated consistently with the
+  immutable adjustment ledger;
+- the adjustment ledger row and immutable admin audit event commit
+  atomically;
+- audit failure rolls back the adjustment and any newly created credit
+  account;
+- no adjustment modifies the reserved/consumed/released execution ledger.
+
+The immutable admin audit action is `ai.credit.adjust`.

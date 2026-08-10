@@ -4,8 +4,9 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.models.ai import AICreditAdjustmentReason
 from app.models.business import TenantRole
 from app.models.subscription import (
     EntitlementKey,
@@ -120,3 +121,34 @@ class AdminSubscriptionRead(BaseModel):
 
     created_at: datetime
     updated_at: datetime
+
+
+class AdminAICreditAdjustmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    delta: int = Field(ge=-1000, le=1000)
+    reason_code: AICreditAdjustmentReason
+
+    @field_validator("delta")
+    @classmethod
+    def validate_nonzero_delta(cls, value: int) -> int:
+        if value == 0:
+            raise ValueError("delta must not be zero")
+        return value
+
+
+class AdminAICreditAdjustmentRead(BaseModel):
+    id: UUID
+    business_id: UUID
+    account_id: UUID
+    subscription_id: UUID
+    delta: int
+    reason_code: AICreditAdjustmentReason
+    base_limit_value: int
+    effective_limit_before: int
+    effective_limit_after: int
+    reserved_count: int
+    consumed_count: int
+    remaining_after: int
+    adjusted_at: datetime
+    replayed: bool

@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import (
     APIRouter,
     Depends,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -19,6 +20,8 @@ from app.models.user import User, UserRole
 from app.schemas.admin import (
     AdminAccountActionRead,
     AdminAccountActionRequest,
+    AdminAICreditAdjustmentRead,
+    AdminAICreditAdjustmentRequest,
     AdminBusinessPageRead,
     AdminBusinessRead,
     AdminEffectiveEntitlementRead,
@@ -35,12 +38,24 @@ from app.services.admin_accounts import (
     AdminAccountTargetForbiddenError,
     AdminAccountTargetNotFoundError,
 )
+from app.services.admin_ai_credits import (
+    AdminAICreditActorForbiddenError,
+    AdminAICreditAdjustmentConflictError,
+    AdminAICreditAdjustmentResult,
+    AdminAICreditAdjustmentService,
+    AdminAICreditBusinessNotFoundError,
+    AdminAICreditEntitlementUnavailableError,
+    AdminAICreditIdempotencyConflictError,
+    AdminAICreditSubscriptionUnavailableError,
+    AdminAICreditUnlimitedEntitlementError,
+)
 from app.services.admin_subscriptions import (
     AdminBusinessNotFoundError,
     AdminBusinessSubscriptionNotFoundError,
     AdminSubscriptionRecord,
     AdminSubscriptionService,
 )
+from app.services.ai_credits import AICreditIdempotencyKeyError
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -128,6 +143,29 @@ def _subscription_read(
         ],
         created_at=subscription.created_at,
         updated_at=subscription.updated_at,
+    )
+
+
+def _ai_credit_adjustment_read(
+    result: AdminAICreditAdjustmentResult,
+) -> AdminAICreditAdjustmentRead:
+    adjustment = result.adjustment
+
+    return AdminAICreditAdjustmentRead(
+        id=adjustment.id,
+        business_id=adjustment.business_id,
+        account_id=adjustment.account_id,
+        subscription_id=adjustment.subscription_id,
+        delta=adjustment.delta,
+        reason_code=adjustment.reason_code,
+        base_limit_value=adjustment.base_limit_value,
+        effective_limit_before=adjustment.effective_limit_before,
+        effective_limit_after=adjustment.effective_limit_after,
+        reserved_count=adjustment.reserved_count,
+        consumed_count=adjustment.consumed_count,
+        remaining_after=result.remaining_after,
+        adjusted_at=adjustment.adjusted_at,
+        replayed=result.replayed,
     )
 
 
@@ -243,6 +281,64 @@ async def read_admin_business_subscription(
         ) from exc
 
     return _subscription_read(result)
+
+
+@router.post(
+    "/businesses/{business_id}/ai-credits/adjustments",
+    response_model=AdminAICreditAdjustmentRead,
+)
+async def adjust_admin_ai_credits(
+    business_id: UUID,
+    payload: AdminAICreditAdjustmentRequest,
+    request: Request,
+    operator: SuperAdminUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    idempotency_key: Annotated[
+        str,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=255,
+        ),
+    ],
+) -> AdminAICreditAdjustmentRead:
+    try:
+        result = await AdminAICreditAdjustmentService(session).adjust(
+            actor=operator,
+            business_id=business_id,
+            delta=payload.delta,
+            reason_code=payload.reason_code,
+            idempotency_key=idempotency_key,
+            request_id=request.state.request_id,
+        )
+    except AdminAICreditBusinessNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Business not found.",
+        ) from exc
+    except AdminAICreditActorForbiddenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This credit operation is not permitted.",
+        ) from exc
+    except AICreditIdempotencyKeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid Idempotency-Key.",
+        ) from exc
+    except (
+        AdminAICreditAdjustmentConflictError,
+        AdminAICreditEntitlementUnavailableError,
+        AdminAICreditIdempotencyConflictError,
+        AdminAICreditSubscriptionUnavailableError,
+        AdminAICreditUnlimitedEntitlementError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The AI credit adjustment conflicts with current credit state.",
+        ) from exc
+
+    return _ai_credit_adjustment_read(result)
 
 
 @router.post(

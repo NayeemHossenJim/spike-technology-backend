@@ -9,7 +9,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import func, select
 
-from app.models.ai import AICreditAccount, AICreditLedgerEntry, AICreditLedgerStatus
+from app.models.ai import (
+    AICreditAccount,
+    AICreditAdjustmentLedgerEntry,
+    AICreditLedgerEntry,
+    AICreditLedgerStatus,
+)
 from app.models.base import utc_now
 from app.models.subscription import EntitlementKey, Subscription
 from app.services.subscriptions import (
@@ -110,6 +115,36 @@ class AICreditService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.entitlements = EntitlementService(session)
+
+    async def _effective_limit(
+        self,
+        scope: TenantScope,
+        account: AICreditAccount,
+        *,
+        base_limit: int | None,
+    ) -> int | None:
+        if base_limit is None:
+            return None
+
+        adjustment_total = await self.session.scalar(
+            select(
+                func.coalesce(
+                    func.sum(AICreditAdjustmentLedgerEntry.delta),
+                    0,
+                )
+            ).where(
+                AICreditAdjustmentLedgerEntry.business_id == scope.business_id,
+                AICreditAdjustmentLedgerEntry.account_id == account.id,
+                AICreditAdjustmentLedgerEntry.subscription_id == account.subscription_id,
+            )
+        )
+
+        effective = base_limit + int(adjustment_total or 0)
+
+        if effective < 0:
+            raise AICreditIntegrityError
+
+        return effective
 
     @staticmethod
     def _snapshot(
@@ -275,7 +310,11 @@ class AICreditService:
                 await self.session.flush()
 
             used = account.reserved_count + account.consumed_count
-            current_limit = entitlement.limit_value
+            current_limit = await self._effective_limit(
+                scope,
+                account,
+                base_limit=entitlement.limit_value,
+            )
             if current_limit is not None and used >= current_limit:
                 raise EntitlementLimitReachedError
 
@@ -447,14 +486,22 @@ class AICreditService:
         reserved_count = account.reserved_count if account is not None else 0
         consumed_count = account.consumed_count if account is not None else 0
         used = reserved_count + consumed_count
-        remaining = (
-            None if entitlement.limit_value is None else max(entitlement.limit_value - used, 0)
-        )
+
+        effective_limit = entitlement.limit_value
+
+        if account is not None:
+            effective_limit = await self._effective_limit(
+                scope,
+                account,
+                base_limit=entitlement.limit_value,
+            )
+
+        remaining = None if effective_limit is None else max(effective_limit - used, 0)
         current = AICreditUsageSummary(
             account_id=account.id if account is not None else None,
             subscription_id=subscription.id,
             business_id=scope.business_id,
-            limit_value=entitlement.limit_value,
+            limit_value=effective_limit,
             reserved_count=reserved_count,
             consumed_count=consumed_count,
             remaining=remaining,
