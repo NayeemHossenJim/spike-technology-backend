@@ -83,3 +83,31 @@ contents.
 
 No high-risk administrative mutation endpoint may be added until this audit
 foundation passes unit, migration, and PostgreSQL integration validation.
+
+
+## Stage 3 ? Account suspension and reactivation
+
+Account lifecycle mutations are Super Admin operations only.
+
+The lifecycle contract is:
+
+- only platform Super Admin may suspend or reactivate an account;
+- Customer Service and customer users cannot perform these actions;
+- platform operator accounts cannot be targets of the customer lifecycle API;
+- suspension sets the customer user inactive;
+- suspension revokes all unrevoked refresh sessions;
+- suspension increments the user's authentication session generation;
+- all previously issued access and refresh JWTs therefore remain invalid after
+  later reactivation;
+- reactivation never restores revoked sessions;
+- a reactivated customer must authenticate again to obtain a new session;
+- reason input is a closed operational reason code, not free-form sensitive text;
+- every accepted lifecycle action writes an immutable audit event with the
+  server-derived actor, target, business, request ID, state transition, and
+  session-revocation count;
+- lifecycle state, token revocation, session-generation change, and audit event
+  commit atomically in one database transaction;
+- audit failure rolls the entire lifecycle mutation back.
+
+Migration 0014 introduces `users.auth_session_version` as the durable
+authentication generation used to invalidate stateless access tokens safely.

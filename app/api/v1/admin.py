@@ -1,20 +1,36 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_roles
 from app.db.session import get_session
 from app.models.user import User, UserRole
 from app.schemas.admin import (
+    AdminAccountActionRead,
+    AdminAccountActionRequest,
     AdminBusinessPageRead,
     AdminBusinessRead,
     AdminUserPageRead,
     AdminUserRead,
 )
-from app.services.admin import AdminService
+from app.services.admin import AdminBusinessRecord, AdminService
+from app.services.admin_accounts import (
+    AdminAccountActorForbiddenError,
+    AdminAccountService,
+    AdminAccountTargetForbiddenError,
+    AdminAccountTargetNotFoundError,
+)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -29,8 +45,17 @@ PlatformSupportUser = Annotated[
     ),
 ]
 
+SuperAdminUser = Annotated[
+    User,
+    Depends(
+        require_roles(
+            UserRole.SUPER_ADMIN,
+        )
+    ),
+]
 
-def _business_read(item) -> AdminBusinessRead:
+
+def _business_read(item: AdminBusinessRecord) -> AdminBusinessRead:
     return AdminBusinessRead(
         id=item.business.id,
         name=item.business.name,
@@ -42,6 +67,36 @@ def _business_read(item) -> AdminBusinessRead:
         created_at=item.business.created_at,
         updated_at=item.business.updated_at,
     )
+
+
+def _account_action_read(result) -> AdminAccountActionRead:
+    return AdminAccountActionRead(
+        user=AdminUserRead.model_validate(result.user),
+        changed=result.changed,
+        sessions_revoked=result.sessions_revoked,
+    )
+
+
+def _raise_account_action_error(exc: Exception) -> None:
+    if isinstance(exc, AdminAccountTargetNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        ) from exc
+
+    if isinstance(
+        exc,
+        (
+            AdminAccountActorForbiddenError,
+            AdminAccountTargetForbiddenError,
+        ),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account cannot be managed by this action.",
+        ) from exc
+
+    raise exc
 
 
 @router.get("/users", response_model=AdminUserPageRead)
@@ -101,3 +156,61 @@ async def list_admin_businesses(
         limit=result.limit,
         offset=result.offset,
     )
+
+
+@router.post(
+    "/users/{user_id}/suspend",
+    response_model=AdminAccountActionRead,
+)
+async def suspend_admin_user(
+    user_id: UUID,
+    payload: AdminAccountActionRequest,
+    request: Request,
+    operator: SuperAdminUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AdminAccountActionRead:
+    try:
+        result = await AdminAccountService(session).suspend_user(
+            actor=operator,
+            target_user_id=user_id,
+            reason_code=payload.reason_code,
+            request_id=request.state.request_id,
+        )
+    except (
+        AdminAccountActorForbiddenError,
+        AdminAccountTargetForbiddenError,
+        AdminAccountTargetNotFoundError,
+    ) as exc:
+        _raise_account_action_error(exc)
+        raise AssertionError("unreachable") from exc
+
+    return _account_action_read(result)
+
+
+@router.post(
+    "/users/{user_id}/reactivate",
+    response_model=AdminAccountActionRead,
+)
+async def reactivate_admin_user(
+    user_id: UUID,
+    payload: AdminAccountActionRequest,
+    request: Request,
+    operator: SuperAdminUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AdminAccountActionRead:
+    try:
+        result = await AdminAccountService(session).reactivate_user(
+            actor=operator,
+            target_user_id=user_id,
+            reason_code=payload.reason_code,
+            request_id=request.state.request_id,
+        )
+    except (
+        AdminAccountActorForbiddenError,
+        AdminAccountTargetForbiddenError,
+        AdminAccountTargetNotFoundError,
+    ) as exc:
+        _raise_account_action_error(exc)
+        raise AssertionError("unreachable") from exc
+
+    return _account_action_read(result)

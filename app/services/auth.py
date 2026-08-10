@@ -289,12 +289,14 @@ class AuthService:
             token_type=TokenType.ACCESS,
             settings=self.settings,
             expires_delta=timedelta(minutes=self.settings.access_token_expire_minutes),
+            session_version=user.auth_session_version,
         )
         refresh = create_jwt_token(
             user_id=user.id,
             token_type=TokenType.REFRESH,
             settings=self.settings,
             expires_delta=timedelta(days=self.settings.refresh_token_expire_days),
+            session_version=user.auth_session_version,
         )
         self.session.add(
             RefreshToken(
@@ -340,7 +342,12 @@ class AuthService:
             raise TokenValidationError
 
         user = await self._get_user_by_id(claims.user_id)
-        if not user or not user.is_active or not user.is_verified:
+        if (
+            not user
+            or not user.is_active
+            or not user.is_verified
+            or claims.session_version != user.auth_session_version
+        ):
             raise TokenValidationError
 
         stored_token.revoked_at = utc_now()

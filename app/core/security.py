@@ -32,6 +32,7 @@ class DecodedToken:
     user_id: UUID
     token_id: UUID
     token_type: TokenType
+    session_version: int
     expires_at: datetime
 
 
@@ -86,14 +87,23 @@ def create_jwt_token(
     token_type: TokenType,
     settings: Settings,
     expires_delta: timedelta,
+    session_version: int = 0,
 ) -> IssuedToken:
     now = utc_now()
     token_id = uuid4()
     expires_at = now + expires_delta
+    if (
+        isinstance(session_version, bool)
+        or not isinstance(session_version, int)
+        or session_version < 0
+    ):
+        raise ValueError("Session version must be a non-negative integer.")
+
     payload: dict[str, Any] = {
         "sub": str(user_id),
         "jti": str(token_id),
         "type": token_type.value,
+        "ver": session_version,
         "iat": now,
         "exp": expires_at,
     }
@@ -113,10 +123,19 @@ def decode_jwt_token(token: str, settings: Settings) -> DecodedToken:
             algorithms=[settings.jwt_algorithm],
             options={"require": ["sub", "jti", "type", "iat", "exp"]},
         )
+        session_version = payload.get("ver", 0)
+        if (
+            isinstance(session_version, bool)
+            or not isinstance(session_version, int)
+            or session_version < 0
+        ):
+            raise ValueError("Invalid session version.")
+
         return DecodedToken(
             user_id=UUID(payload["sub"]),
             token_id=UUID(payload["jti"]),
             token_type=TokenType(payload["type"]),
+            session_version=session_version,
             expires_at=datetime.fromtimestamp(payload["exp"], tz=UTC),
         )
     except (InvalidTokenError, ValueError, KeyError) as exc:

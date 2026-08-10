@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, Column, DateTime, String
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Integer, String
 from sqlmodel import Field
 
 from app.models.base import TimestampedModel, UUIDPrimaryKey
@@ -54,6 +54,12 @@ class JobRole(StrEnum):
 
 class User(UUIDPrimaryKey, TimestampedModel, table=True):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "auth_session_version >= 0",
+            name="ck_users_auth_session_version",
+        ),
+    )
 
     email: str = Field(
         sa_column=Column(String(320), nullable=False, unique=True, index=True),
@@ -63,6 +69,15 @@ class User(UUIDPrimaryKey, TimestampedModel, table=True):
     role: UserRole = Field(
         default=UserRole.USER,
         sa_column=Column(String(32), nullable=False, default=UserRole.USER.value),
+    )
+    auth_session_version: int = Field(
+        default=0,
+        sa_column=Column(
+            Integer,
+            nullable=False,
+            default=0,
+            server_default="0",
+        ),
     )
     industry: Industry | None = Field(
         default=None,

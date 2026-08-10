@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -47,3 +48,21 @@ class AdminBusinessPageRead(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class AdminAccountActionReason(StrEnum):
+    SECURITY_REVIEW = "security_review"
+    TERMS_VIOLATION = "terms_violation"
+    ABUSE_PREVENTION = "abuse_prevention"
+    ADMINISTRATIVE_HOLD = "administrative_hold"
+    SUPPORT_RESOLUTION = "support_resolution"
+
+
+class AdminAccountActionRequest(BaseModel):
+    reason_code: AdminAccountActionReason
+
+
+class AdminAccountActionRead(BaseModel):
+    user: AdminUserRead
+    changed: bool
+    sessions_revoked: int

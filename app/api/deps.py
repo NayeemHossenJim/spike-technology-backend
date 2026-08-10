@@ -75,7 +75,7 @@ async def get_current_user(
 
     result = await session.execute(select(User).where(User.id == token.user_id))
     user = result.scalar_one_or_none()
-    if not user or not user.is_active:
+    if not user or not user.is_active or token.session_version != user.auth_session_version:
         raise credentials_exception
     return user
 

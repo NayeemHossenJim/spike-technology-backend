@@ -19,7 +19,7 @@ def make_alembic_config() -> Config:
 
 def test_alembic_has_exactly_one_migration_head() -> None:
     heads = ScriptDirectory.from_config(make_alembic_config()).get_heads()
-    assert heads == ["0013_m7_admin_audit"]
+    assert heads == ["0014_m7_account_lifecycle"]
 
 
 def test_alembic_path_separator_uses_current_setting() -> None:
