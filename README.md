@@ -1,5 +1,63 @@
 # Spike Technology Backend
 
+<!-- SPIKE_PROJECT_STATUS_START -->
+
+## Project status
+
+**Last updated:** 2026-08-11
+
+Backend implementation through **Milestone 7 - Admin Operations** is complete,
+validated, merged into `develop`, and pushed to the remote repository.
+
+| Checkpoint | Status |
+|---|---|
+| Current branch | `develop` |
+| Milestone 7 merge | `2c5ee900ba987393f4aaa4986b780798962079be` |
+| Alembic head | `0015_m7_ai_credit_adjustments` |
+| Full project regression | **283 passed** |
+| Integration regression | **85 passed** |
+| Milestone 7 integration | **22 passed** |
+| PostgreSQL | Healthy |
+| Redis | Healthy |
+| FastAPI API | Running |
+| Celery worker | Running |
+
+### Completed milestones
+
+- [x] Phase 1 / Milestone 0 - Authentication and baseline hardening
+- [x] Milestone 1 - Business, tenancy, plans and entitlements
+- [x] Milestone 2 - Stripe billing
+- [x] Milestone 3 - Secure report uploads
+- [x] Milestone 4 - Report data processing
+- [x] Milestone 5 - Gemini AI, atomic credits and conversations
+- [x] Milestone 6 - Dashboards, snapshots, exports and PDF
+- [x] Milestone 7 - Admin operations and security controls
+
+### Next milestone
+
+**Milestone 8 - Production Readiness & Deployment**
+
+The next phase focuses on production infrastructure rather than adding
+unplanned backend features:
+
+- production environment and secrets;
+- private S3 storage;
+- production email delivery;
+- Stripe production readiness;
+- production PostgreSQL and Redis;
+- backups and disaster recovery;
+- CI/CD;
+- observability and alerting;
+- security and performance validation;
+- frontend/backend staging E2E testing;
+- staging/UAT;
+- production deployment and rollback readiness.
+
+For the full completed-work record and next-step execution plan, see
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
+
+<!-- SPIKE_PROJECT_STATUS_END -->
+
 Production-oriented FastAPI backend for the confirmed Spike Technology v1 scope.
 
 ## Delivery status
