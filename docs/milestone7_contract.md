@@ -53,7 +53,7 @@ cannot perform Super Admin actions.
 No Stage 1 endpoint performs customer financial-data retrieval or privileged
 state mutation.
 
-## Stage 2 ? Administrative audit foundation
+## Stage 2 — Administrative audit foundation
 
 Privileged administrative mutations must be auditable before they are exposed.
 
@@ -85,7 +85,7 @@ No high-risk administrative mutation endpoint may be added until this audit
 foundation passes unit, migration, and PostgreSQL integration validation.
 
 
-## Stage 3 ? Account suspension and reactivation
+## Stage 3 — Account suspension and reactivation
 
 Account lifecycle mutations are Super Admin operations only.
 
@@ -113,7 +113,7 @@ Migration 0014 introduces `users.auth_session_version` as the durable
 authentication generation used to invalidate stateless access tokens safely.
 
 
-## Stage 4 ? Subscription and tenant operations
+## Stage 4 — Subscription and tenant operations
 
 Stage 4 begins with read-only subscription visibility.
 
@@ -145,7 +145,7 @@ subscription synchronizer, write an immutable admin audit event, and must not
 introduce an independent local source of subscription truth.
 
 
-## Stage 5 ? Controlled AI credit adjustments
+## Stage 5 — Controlled AI credit adjustments
 
 The existing `ai_credit_ledger_entries` table remains the immutable reservation
 state machine for one AI response: reserved, consumed, or released. Admin credit
