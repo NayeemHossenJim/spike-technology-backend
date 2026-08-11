@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    admin,
     ai,
     auth,
     billing,
@@ -24,4 +25,5 @@ api_router.include_router(billing.router)
 api_router.include_router(uploads.router)
 api_router.include_router(dashboards.router)
 api_router.include_router(ai.router)
+api_router.include_router(admin.router)
 api_router.include_router(health.router)
