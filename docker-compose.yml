@@ -6,29 +6,58 @@ services:
       POSTGRES_PASSWORD: spike_local_password
       POSTGRES_DB: spike
     ports:
-      - "5432:5432"
+    - 5432:5432
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-create-test-db.sql:ro
+    - postgres_data:/var/lib/postgresql/data
+    - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-create-test-db.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U spike -d spike"]
+      test:
+      - CMD-SHELL
+      - pg_isready -U spike -d spike
       interval: 5s
       timeout: 3s
       retries: 20
-
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    command:
+    - redis-server
+    - --appendonly
+    - 'yes'
     ports:
-      - "6379:6379"
+    - 6379:6379
     volumes:
-      - redis_data:/data
+    - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+      - CMD
+      - redis-cli
+      - ping
       interval: 5s
       timeout: 3s
       retries: 20
-
+  migrate:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://spike:spike_local_password@postgres:5432/spike
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+    - alembic
+    - upgrade
+    - head
+    restart: 'no'
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
   api:
     build: .
     env_file: .env
@@ -37,16 +66,44 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      XDG_CACHE_HOME: /tmp/.cache
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
-      - "8000:8000"
-    command: >-
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers"
-
+    - 8000:8000
+    command:
+    - uvicorn
+    - app.main:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    - --proxy-headers
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live', timeout=2).read()
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
   worker:
     build: .
     env_file: .env
@@ -55,13 +112,38 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      XDG_CACHE_HOME: /tmp/.cache
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO
-
+      migrate:
+        condition: service_completed_successfully
+    command:
+    - celery
+    - -A
+    - app.workers.celery_app:celery_app
+    - worker
+    - --loglevel=INFO
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    stop_grace_period: 60s
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - celery -A app.workers.celery_app:celery_app inspect ping --destination celery@$$HOSTNAME --timeout 5
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 20s
 volumes:
-  postgres_data:
-  redis_data:
+  postgres_data: null
+  redis_data: null
