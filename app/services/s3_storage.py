@@ -13,9 +13,9 @@ from uuid import UUID
 import boto3
 from asyncer import asyncify
 from botocore.client import BaseClient
-from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from app.core.aws import build_aws_client_config
 from app.core.config import Settings, get_settings
 
 S3_BUCKET_SECURITY_CACHE_SECONDS = 60
@@ -130,7 +130,10 @@ class Boto3S3UploadGateway:
             self._client = boto3.client(
                 "s3",
                 region_name=self.settings.aws_region,
-                config=Config(signature_version="s3v4"),
+                config=build_aws_client_config(
+                    self.settings,
+                    signature_version="s3v4",
+                ),
             )
         return self._client
 

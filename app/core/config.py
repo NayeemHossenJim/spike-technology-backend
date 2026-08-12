@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     celery_result_backend: str
     db_pool_size: int = 10
     db_max_overflow: int = 20
+    db_pool_timeout_seconds: int = 30
+    db_connect_timeout_seconds: int = 10
+    redis_socket_connect_timeout_seconds: int = 5
+    redis_socket_timeout_seconds: int = 5
+    health_check_timeout_seconds: int = 3
 
     jwt_secret_key: SecretStr
     jwt_algorithm: str = "HS256"
@@ -56,6 +61,9 @@ class Settings(BaseSettings):
     email_backend: EmailBackend = EmailBackend.CONSOLE
     aws_region: str | None = None
     ses_from_email: str | None = None
+    aws_connect_timeout_seconds: int = 5
+    aws_read_timeout_seconds: int = 30
+    aws_max_attempts: int = 3
     email_verification_expire_minutes: int = 10
     password_reset_expire_minutes: int = 10
     otp_max_attempts: int = 5
@@ -131,6 +139,26 @@ class Settings(BaseSettings):
         secret = self.jwt_secret_key.get_secret_value()
         if len(secret) < 32:
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters long")
+        if self.db_pool_size <= 0:
+            raise ValueError("DB_POOL_SIZE must be greater than zero")
+        if self.db_max_overflow < 0:
+            raise ValueError("DB_MAX_OVERFLOW cannot be negative")
+        if not 1 <= self.db_pool_timeout_seconds <= 120:
+            raise ValueError("DB_POOL_TIMEOUT_SECONDS must be between 1 and 120")
+        if not 1 <= self.db_connect_timeout_seconds <= 60:
+            raise ValueError("DB_CONNECT_TIMEOUT_SECONDS must be between 1 and 60")
+        if not 1 <= self.redis_socket_connect_timeout_seconds <= 60:
+            raise ValueError("REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS must be between 1 and 60")
+        if not 1 <= self.redis_socket_timeout_seconds <= 60:
+            raise ValueError("REDIS_SOCKET_TIMEOUT_SECONDS must be between 1 and 60")
+        if not 1 <= self.health_check_timeout_seconds <= 30:
+            raise ValueError("HEALTH_CHECK_TIMEOUT_SECONDS must be between 1 and 30")
+        if not 1 <= self.aws_connect_timeout_seconds <= 60:
+            raise ValueError("AWS_CONNECT_TIMEOUT_SECONDS must be between 1 and 60")
+        if not 1 <= self.aws_read_timeout_seconds <= 120:
+            raise ValueError("AWS_READ_TIMEOUT_SECONDS must be between 1 and 120")
+        if not 1 <= self.aws_max_attempts <= 10:
+            raise ValueError("AWS_MAX_ATTEMPTS must be between 1 and 10")
         if self.email_verification_expire_minutes <= 0:
             raise ValueError("EMAIL_VERIFICATION_EXPIRE_MINUTES must be greater than zero")
         if self.password_reset_expire_minutes <= 0:

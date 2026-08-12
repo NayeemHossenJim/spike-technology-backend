@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings, get_settings
 from app.db.session import get_session
 from app.schemas.health import HealthResponse
 from app.services.redis import get_redis
@@ -25,11 +27,13 @@ async def liveness() -> HealthResponse:
 async def readiness(
     session: Annotated[AsyncSession, Depends(get_session)],
     redis: Annotated[Redis, Depends(get_redis)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> HealthResponse:
     try:
-        await session.execute(text("SELECT 1"))
-        await redis.ping()
-    except (SQLAlchemyError, RedisError) as exc:
+        async with asyncio.timeout(settings.health_check_timeout_seconds):
+            await session.execute(text("SELECT 1"))
+            await redis.ping()
+    except (TimeoutError, SQLAlchemyError, RedisError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="A required service is unavailable.",

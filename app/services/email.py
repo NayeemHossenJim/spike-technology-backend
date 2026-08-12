@@ -7,6 +7,7 @@ from typing import Protocol
 import boto3
 from asyncer import asyncify
 
+from app.core.aws import build_aws_client_config
 from app.core.config import EmailBackend, Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,11 @@ class SesEmailSender:
         if not settings.aws_region or not settings.ses_from_email:
             raise ValueError("AWS_REGION and SES_FROM_EMAIL are required for AWS SES")
         self.settings = settings
-        self.client = boto3.client("sesv2", region_name=settings.aws_region)
+        self.client = boto3.client(
+            "sesv2",
+            region_name=settings.aws_region,
+            config=build_aws_client_config(settings),
+        )
 
     async def _send(self, *, recipient: str, subject: str, body: str) -> None:
         await asyncify(self.client.send_email)(
