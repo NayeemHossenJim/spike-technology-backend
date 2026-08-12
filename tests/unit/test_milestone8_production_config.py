@@ -22,8 +22,17 @@ def production_settings(**overrides: object) -> Settings:
         "ses_from_email": "noreply@example.com",
         "s3_uploads_enabled": True,
         "s3_upload_bucket": "spike-production-reports",
-        "stripe_enabled": False,
-        "gemini_enabled": False,
+        "stripe_enabled": True,
+        "stripe_secret_key": "sk_live_unit_test_only",
+        "stripe_webhook_secret": "whsec_unit_test_only",
+        "stripe_premium_monthly_price_id": "price_premium_live_unit",
+        "stripe_pro_monthly_price_id": "price_pro_live_unit",
+        "stripe_checkout_success_url": (
+            "https://app.example.com/billing/success?session_id={CHECKOUT_SESSION_ID}"
+        ),
+        "stripe_checkout_cancel_url": "https://app.example.com/billing/cancel",
+        "gemini_enabled": True,
+        "gemini_api_key": "test-only-production-gemini-key",
     }
     values.update(overrides)
     return Settings(**values)
@@ -90,3 +99,13 @@ def test_production_redis_services_reject_localhost(
 def test_production_requires_s3_uploads() -> None:
     with pytest.raises(ValidationError, match="S3_UPLOADS_ENABLED"):
         production_settings(s3_uploads_enabled=False)
+
+
+def test_production_requires_stripe() -> None:
+    with pytest.raises(ValidationError, match="STRIPE_ENABLED"):
+        production_settings(stripe_enabled=False)
+
+
+def test_production_requires_gemini() -> None:
+    with pytest.raises(ValidationError, match="GEMINI_ENABLED"):
+        production_settings(gemini_enabled=False)

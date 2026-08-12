@@ -22,4 +22,14 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
+    broker_connection_retry=True,
+    broker_connection_retry_on_startup=True,
+    worker_cancel_long_running_tasks_on_connection_loss=True,
+    broker_transport_options={
+        "socket_connect_timeout": settings.redis_socket_connect_timeout_seconds,
+        "socket_timeout": settings.redis_socket_timeout_seconds,
+    },
+    redis_socket_connect_timeout=settings.redis_socket_connect_timeout_seconds,
+    redis_socket_timeout=settings.redis_socket_timeout_seconds,
+    redis_retry_on_timeout=True,
 )

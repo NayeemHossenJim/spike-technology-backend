@@ -290,6 +290,10 @@ class Settings(BaseSettings):
         if self.app_env is AppEnvironment.PRODUCTION:
             if "replace-this" in secret or "change-me" in secret:
                 raise ValueError("A real JWT_SECRET_KEY is required in production")
+            if not self.stripe_enabled:
+                raise ValueError("STRIPE_ENABLED must be true in production")
+            if not self.gemini_enabled:
+                raise ValueError("GEMINI_ENABLED must be true in production")
 
             frontend = urlparse(self.frontend_url)
             if frontend.scheme != "https" or not frontend.netloc:
