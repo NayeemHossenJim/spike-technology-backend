@@ -97,6 +97,17 @@ class Settings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def normalize_log_level(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().upper()
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if normalized not in allowed:
+            raise ValueError("LOG_LEVEL must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
+        return normalized
+
     @field_validator("gemini_model", mode="before")
     @classmethod
     def normalize_gemini_model(cls, value: object) -> object:
@@ -251,6 +262,43 @@ class Settings(BaseSettings):
         if self.app_env is AppEnvironment.PRODUCTION:
             if "replace-this" in secret or "change-me" in secret:
                 raise ValueError("A real JWT_SECRET_KEY is required in production")
+
+            frontend = urlparse(self.frontend_url)
+            if frontend.scheme != "https" or not frontend.netloc:
+                raise ValueError("FRONTEND_URL must use HTTPS in production")
+
+            for origin in self.cors_origins:
+                parsed_origin = urlparse(origin)
+                hostname = (parsed_origin.hostname or "").lower()
+                if parsed_origin.scheme != "https" or not parsed_origin.netloc:
+                    raise ValueError("CORS_ORIGINS must contain only HTTPS origins in production")
+                if hostname in {"localhost", "127.0.0.1", "::1"}:
+                    raise ValueError("Localhost CORS origins are not allowed in production")
+
+            for host in self.trusted_hosts:
+                normalized_host = host.strip().lower()
+                if normalized_host in {"localhost", "127.0.0.1", "::1", "testserver"}:
+                    raise ValueError("Development trusted hosts are not allowed in production")
+
+            database = urlparse(self.database_url)
+            if database.scheme not in {"postgresql", "postgresql+asyncpg"}:
+                raise ValueError("DATABASE_URL must use PostgreSQL in production")
+
+            for setting_name in (
+                "redis_url",
+                "celery_broker_url",
+                "celery_result_backend",
+            ):
+                parsed_service = urlparse(getattr(self, setting_name))
+                hostname = (parsed_service.hostname or "").lower()
+                if parsed_service.scheme not in {"redis", "rediss"} or not parsed_service.netloc:
+                    raise ValueError(f"{setting_name.upper()} must use a Redis URL in production")
+                if hostname in {"localhost", "127.0.0.1", "::1"}:
+                    raise ValueError(f"{setting_name.upper()} cannot use localhost in production")
+
+            if not self.s3_uploads_enabled:
+                raise ValueError("S3_UPLOADS_ENABLED must be true in production")
+
             if self.email_backend is not EmailBackend.SES:
                 raise ValueError("EMAIL_BACKEND must be 'ses' in production")
             if not self.aws_region or not self.ses_from_email:

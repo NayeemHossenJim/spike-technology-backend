@@ -62,12 +62,19 @@ def test_production_rejects_console_email_backend() -> None:
             _env_file=None,
             stripe_enabled=False,
             app_env=AppEnvironment.PRODUCTION,
-            database_url="postgresql+asyncpg://spike:password@localhost:5432/spike",
-            redis_url="redis://localhost:6379/0",
-            celery_broker_url="redis://localhost:6379/0",
-            celery_result_backend="redis://localhost:6379/1",
+            database_url=("postgresql+asyncpg://spike:password@db.internal:5432/spike"),
+            redis_url="rediss://redis.internal:6379/0",
+            celery_broker_url="rediss://redis.internal:6379/0",
+            celery_result_backend="rediss://redis.internal:6379/1",
             jwt_secret_key="this-is-a-long-enough-production-test-secret-value",
+            frontend_url="https://app.example.com",
+            cors_origins=["https://app.example.com"],
+            trusted_hosts=["api.example.com"],
             email_backend="console",
+            aws_region="us-east-1",
+            ses_from_email="no-reply@example.com",
+            s3_uploads_enabled=True,
+            s3_upload_bucket="spike-production-reports",
         )
 
 
@@ -208,6 +215,11 @@ def test_production_refresh_cookie_is_secure() -> None:
         email_backend="ses",
         aws_region="us-east-1",
         ses_from_email="no-reply@example.com",
+        frontend_url="https://app.example.com",
+        cors_origins=["https://app.example.com"],
+        trusted_hosts=["api.example.com"],
+        s3_uploads_enabled=True,
+        s3_upload_bucket="spike-production-reports",
     )
     response = Response()
     set_refresh_cookie(
