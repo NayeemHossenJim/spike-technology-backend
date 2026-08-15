@@ -82,3 +82,33 @@ def test_local_database_and_redis_ports_remain_available_for_development() -> No
 
     assert services["postgres"]["ports"] == ["5432:5432"]
     assert services["redis"]["ports"] == ["6379:6379"]
+
+
+def test_container_base_images_are_digest_pinned() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    from_lines = [
+        line.strip() for line in dockerfile.splitlines() if line.strip().startswith("FROM ")
+    ]
+
+    assert len(from_lines) == 3
+
+    for line in from_lines:
+        image = line.split()[1]
+        assert "@sha256:" in image
+
+
+def test_runtime_image_uses_builder_venv_without_uv_tooling() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert " AS builder" in dockerfile
+    assert " AS runtime" in dockerfile
+    assert "COPY --from=builder /app/.venv /app/.venv" in dockerfile
+
+    runtime = dockerfile.split(
+        " AS runtime",
+        maxsplit=1,
+    )[1]
+
+    assert "COPY --from=uv" not in runtime
+    assert "RUN uv sync" not in runtime

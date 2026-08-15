@@ -1,10 +1,26 @@
-FROM ghcr.io/astral-sh/uv:0.11.28 AS uv
-FROM python:3.12.13-slim-bookworm
+FROM ghcr.io/astral-sh/uv:0.11.28@sha256:0f36cb9361a3346885ca3677e3767016687b5a170c1a6b88465ec14aefec90aa AS uv
+
+FROM python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
+
+WORKDIR /app
+
+COPY --from=uv /uv /uvx /bin/
+
+COPY pyproject.toml uv.lock README.md ./
+COPY app ./app
+
+RUN uv sync --frozen --no-dev --no-editable --extra phase3
+
+
+FROM python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
     HOME="/home/app" \
     XDG_CACHE_HOME="/home/app/.cache" \
     PATH="/app/.venv/bin:$PATH"
@@ -25,14 +41,11 @@ RUN addgroup --system app \
     && mkdir -p /home/app/.cache/fontconfig \
     && chown -R app:app /home/app
 
-COPY --from=uv /uv /uvx /bin/
+COPY --from=builder /app/.venv /app/.venv
 
-COPY pyproject.toml uv.lock README.md ./
 COPY app ./app
 COPY alembic.ini ./
 COPY alembic ./alembic
-
-RUN uv sync --frozen --no-dev --no-editable --extra phase3
 
 USER app
 
