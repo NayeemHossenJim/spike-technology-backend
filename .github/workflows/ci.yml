@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - develop
+      - "milestone-*"
+  pull_request:
+    branches:
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.32"
+  PYTHON_VERSION: "3.12.13"
+
+jobs:
+  quality:
+    name: Quality and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Lint
+        run: uv run --frozen ruff check .
+
+      - name: Check formatting
+        run: uv run --frozen ruff format --check .
+
+      - name: Run unit tests
+        run: uv run --frozen pytest -q -m "not integration"
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://spike:spike_ci_password@localhost:5432/spike_test
+      TEST_DATABASE_URL: postgresql+asyncpg://spike:spike_ci_password@localhost:5432/spike_test
+      REDIS_URL: redis://localhost:6379/15
+      TEST_REDIS_URL: redis://localhost:6379/15
+      CELERY_BROKER_URL: redis://localhost:6379/15
+      CELERY_RESULT_BACKEND: redis://localhost:6379/14
+      TEST_CELERY_RESULT_BACKEND: redis://localhost:6379/14
+      JWT_SECRET_KEY: ci-only-jwt-secret-with-at-least-thirty-two-characters
+      EMAIL_BACKEND: console
+      CORS_ORIGINS: http://localhost:3000
+      TRUSTED_HOSTS: localhost,127.0.0.1,testserver
+      STRIPE_ENABLED: "false"
+      GEMINI_ENABLED: "false"
+      S3_ENABLED: "false"
+      RUN_INTEGRATION_TESTS: "1"
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: spike
+          POSTGRES_PASSWORD: spike_ci_password
+          POSTGRES_DB: spike_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spike -d spike_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Verify single migration head
+        run: uv run --frozen alembic heads
+
+      - name: Apply migrations
+        run: uv run --frozen alembic upgrade head
+
+      - name: Verify migration state
+        run: uv run --frozen alembic current
+
+      - name: Run integration tests
+        run: uv run --frozen pytest -q tests/integration
+
+  image:
+    name: Production image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate Compose
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          rm -f .env
+
+      - name: Build production image
+        run: docker build --tag spike-backend:ci .
+
+      - name: Verify non-root image user
+        run: |
+          test "$(docker image inspect spike-backend:ci --format '{{.Config.User}}')" = "app"
+
+      - name: Verify runtime dependency surface
+        run: |
+          docker run --rm \
+            --entrypoint python \
+            spike-backend:ci \
+            -c "import shutil; assert shutil.which('uv') is None; assert shutil.which('uvx') is None; import fastapi, celery, weasyprint; print('runtime imports ok')"
+
+      - name: Verify PDF runtime
+        run: |
+          docker run --rm \
+            --entrypoint python \
+            spike-backend:ci \
+            -c "from weasyprint import HTML; pdf = HTML(string='<h1>Spike CI</h1>').write_pdf(); assert pdf.startswith(b'%PDF'); print('PDF bytes:', len(pdf))"
