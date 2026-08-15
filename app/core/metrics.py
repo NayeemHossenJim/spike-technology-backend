@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from threading import RLock
 from typing import Final
@@ -18,6 +19,13 @@ HTTP_DURATION_BUCKETS_SECONDS: Final[tuple[float, ...]] = (
     2.5,
     5.0,
     10.0,
+)
+
+REPORT_PROCESSING_STATUSES: Final[tuple[str, ...]] = (
+    "queued",
+    "processing",
+    "completed",
+    "failed",
 )
 
 _ALLOWED_HTTP_METHODS: Final[frozenset[str]] = frozenset(
@@ -42,6 +50,14 @@ class _HTTPSeries:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ReportProcessingMetricsSnapshot:
+    status_counts: Mapping[str, int]
+    failed_by_error_code: Mapping[str, int]
+    retrying_jobs: int
+    stale_leases: int
+
+
 def _normalize_method(method: str) -> str:
     normalized = method.upper()
     if normalized in _ALLOWED_HTTP_METHODS:
@@ -62,6 +78,74 @@ def _escape_label(value: str) -> str:
 
 def _format_number(value: float) -> str:
     return f"{value:.6f}".rstrip("0").rstrip(".") or "0"
+
+
+def render_report_processing_metrics(
+    snapshot: ReportProcessingMetricsSnapshot | None,
+) -> str:
+    available = 1 if snapshot is not None else 0
+
+    lines = [
+        (
+            "# HELP spike_report_processing_metrics_available "
+            "Whether durable report-processing metrics were loaded successfully."
+        ),
+        "# TYPE spike_report_processing_metrics_available gauge",
+        f"spike_report_processing_metrics_available {available}",
+    ]
+
+    if snapshot is None:
+        return "\n".join(lines) + "\n"
+
+    lines.extend(
+        [
+            (
+                "# HELP spike_report_processing_jobs "
+                "Current report-processing jobs by durable status."
+            ),
+            "# TYPE spike_report_processing_jobs gauge",
+        ]
+    )
+
+    for status in REPORT_PROCESSING_STATUSES:
+        count = max(0, int(snapshot.status_counts.get(status, 0)))
+        lines.append(f'spike_report_processing_jobs{{status="{_escape_label(status)}"}} {count}')
+
+    lines.extend(
+        [
+            (
+                "# HELP spike_report_processing_failed_jobs "
+                "Current terminal report-processing failures by error code."
+            ),
+            "# TYPE spike_report_processing_failed_jobs gauge",
+        ]
+    )
+
+    for error_code, raw_count in sorted(snapshot.failed_by_error_code.items()):
+        count = max(0, int(raw_count))
+        lines.append(
+            "spike_report_processing_failed_jobs"
+            f'{{error_code="{_escape_label(error_code)}"}} {count}'
+        )
+
+    lines.extend(
+        [
+            (
+                "# HELP spike_report_processing_retrying_jobs "
+                "Current queued jobs that have already started at least one attempt."
+            ),
+            "# TYPE spike_report_processing_retrying_jobs gauge",
+            (f"spike_report_processing_retrying_jobs {max(0, int(snapshot.retrying_jobs))}"),
+            (
+                "# HELP spike_report_processing_stale_leases "
+                "Current processing jobs whose worker lease has expired."
+            ),
+            "# TYPE spike_report_processing_stale_leases gauge",
+            (f"spike_report_processing_stale_leases {max(0, int(snapshot.stale_leases))}"),
+        ]
+    )
+
+    return "\n".join(lines) + "\n"
 
 
 class MetricsRegistry:
@@ -137,7 +221,7 @@ class MetricsRegistry:
 
         lines.extend(
             [
-                "# HELP spike_http_request_duration_seconds HTTP request duration in seconds.",
+                ("# HELP spike_http_request_duration_seconds HTTP request duration in seconds."),
                 "# TYPE spike_http_request_duration_seconds histogram",
             ]
         )
@@ -182,5 +266,8 @@ __all__ = [
     "HTTP_DURATION_BUCKETS_SECONDS",
     "MetricsRegistry",
     "PROMETHEUS_CONTENT_TYPE",
+    "REPORT_PROCESSING_STATUSES",
+    "ReportProcessingMetricsSnapshot",
     "metrics_registry",
+    "render_report_processing_metrics",
 ]

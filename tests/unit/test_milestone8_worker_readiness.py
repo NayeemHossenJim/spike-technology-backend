@@ -30,3 +30,8 @@ def test_worker_keeps_existing_prefetch_and_result_policy() -> None:
     assert celery_app.conf.worker_prefetch_multiplier == 1
     assert celery_app.conf.task_track_started is True
     assert celery_app.conf.result_expires is not None
+
+
+def test_worker_emits_native_monitoring_events() -> None:
+    assert celery_app.conf.worker_send_task_events is True
+    assert celery_app.conf.task_send_sent_event is True

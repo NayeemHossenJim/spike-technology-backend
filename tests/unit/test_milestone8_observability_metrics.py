@@ -2,10 +2,39 @@ from __future__ import annotations
 
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
+from pytest import MonkeyPatch, fixture
 
+from app.api.v1 import health as health_api
 from app.core.config import get_settings
-from app.core.metrics import MetricsRegistry, metrics_registry
+from app.core.metrics import (
+    MetricsRegistry,
+    ReportProcessingMetricsSnapshot,
+    metrics_registry,
+    render_report_processing_metrics,
+)
 from app.main import create_app
+
+
+@fixture(autouse=True)
+def stub_processing_metrics_loader(monkeypatch: MonkeyPatch) -> None:
+    async def load_stub(
+        *,
+        session: object,
+    ) -> ReportProcessingMetricsSnapshot:
+        del session
+
+        return ReportProcessingMetricsSnapshot(
+            status_counts={},
+            failed_by_error_code={},
+            retrying_jobs=0,
+            stale_leases=0,
+        )
+
+    monkeypatch.setattr(
+        health_api,
+        "load_report_processing_metrics",
+        load_stub,
+    )
 
 
 def test_http_metrics_aggregate_by_low_cardinality_labels() -> None:
@@ -85,6 +114,47 @@ def test_unknown_http_methods_are_collapsed() -> None:
     assert "CUSTOM-USER-CONTROLLED" not in rendered
 
 
+def test_processing_metrics_render_durable_job_state() -> None:
+    snapshot = ReportProcessingMetricsSnapshot(
+        status_counts={
+            "queued": 3,
+            "processing": 2,
+            "completed": 10,
+            "failed": 4,
+        },
+        failed_by_error_code={
+            "processing_internal_error": 1,
+            "source_state_invalid": 3,
+        },
+        retrying_jobs=2,
+        stale_leases=1,
+    )
+
+    rendered = render_report_processing_metrics(snapshot)
+
+    assert "spike_report_processing_metrics_available 1" in rendered
+    assert 'spike_report_processing_jobs{status="queued"} 3' in rendered
+    assert 'spike_report_processing_jobs{status="processing"} 2' in rendered
+    assert 'spike_report_processing_jobs{status="completed"} 10' in rendered
+    assert 'spike_report_processing_jobs{status="failed"} 4' in rendered
+
+    assert (
+        'spike_report_processing_failed_jobs{error_code="processing_internal_error"} 1' in rendered
+    )
+    assert 'spike_report_processing_failed_jobs{error_code="source_state_invalid"} 3' in rendered
+
+    assert "spike_report_processing_retrying_jobs 2" in rendered
+    assert "spike_report_processing_stale_leases 1" in rendered
+
+
+def test_processing_metrics_failure_does_not_fabricate_zero_job_state() -> None:
+    rendered = render_report_processing_metrics(None)
+
+    assert "spike_report_processing_metrics_available 0" in rendered
+    assert "spike_report_processing_jobs{" not in rendered
+    assert "spike_report_processing_failed_jobs{" not in rendered
+
+
 async def test_metrics_endpoint_uses_route_templates_and_omits_query_data() -> None:
     metrics_registry.reset()
 
@@ -117,6 +187,7 @@ async def test_metrics_endpoint_uses_route_templates_and_omits_query_data() -> N
 
         assert "spike_http_requests_total" in rendered
         assert "spike_http_request_duration_seconds" in rendered
+        assert "spike_report_processing_metrics_available" in rendered
     finally:
         metrics_registry.reset()
 
@@ -180,6 +251,7 @@ async def test_configured_metrics_token_allows_valid_bearer_token() -> None:
 
         assert response.status_code == 200
         assert "spike_http_requests_total" in response.text
+        assert "spike_report_processing_metrics_available" in response.text
         assert token not in response.text
     finally:
         application.dependency_overrides.clear()

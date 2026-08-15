@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 from typing import Annotated
 
@@ -12,12 +13,18 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.metrics import PROMETHEUS_CONTENT_TYPE, metrics_registry
+from app.core.metrics import (
+    PROMETHEUS_CONTENT_TYPE,
+    metrics_registry,
+    render_report_processing_metrics,
+)
 from app.db.session import get_session
 from app.schemas.health import HealthResponse
+from app.services.processing_metrics import load_report_processing_metrics
 from app.services.redis import get_redis
 
 router = APIRouter(prefix="/health", tags=["Health"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/live", response_model=HealthResponse, include_in_schema=False)
@@ -51,6 +58,7 @@ def _require_metrics_access(
 
 @router.get("/metrics", include_in_schema=False)
 async def operational_metrics(
+    session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     authorization: Annotated[
         str | None,
@@ -62,8 +70,29 @@ async def operational_metrics(
         authorization,
     )
 
+    processing_snapshot = None
+
+    try:
+        async with asyncio.timeout(settings.health_check_timeout_seconds):
+            processing_snapshot = await load_report_processing_metrics(
+                session=session,
+            )
+    except (TimeoutError, SQLAlchemyError) as exc:
+        logger.warning(
+            "report_processing_metrics_unavailable",
+            extra={
+                "outcome": "unavailable",
+                "exception_type": type(exc).__name__,
+                "phase": "metrics",
+            },
+        )
+
+    content = metrics_registry.render_prometheus() + render_report_processing_metrics(
+        processing_snapshot
+    )
+
     return Response(
-        content=metrics_registry.render_prometheus(),
+        content=content,
         media_type=PROMETHEUS_CONTENT_TYPE,
     )
 
