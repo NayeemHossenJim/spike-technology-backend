@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import re
 from contextlib import asynccontextmanager
+from time import perf_counter
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -16,6 +18,26 @@ from app.services.gemini_gateway import get_gemini_gateway
 from app.services.redis import close_redis
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+logger = logging.getLogger(__name__)
+
+
+def _request_route_template(request: Request) -> str:
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None)
+
+    if isinstance(route_path, str) and route_path:
+        return route_path
+
+    return "<unmatched>"
+
+
+def _request_outcome(status_code: int) -> str:
+    if status_code >= 500:
+        return "server_error"
+    if status_code >= 400:
+        return "client_error"
+    return "success"
 
 
 @asynccontextmanager
@@ -56,6 +78,7 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def add_request_context_and_security_headers(request: Request, call_next):
+        started = perf_counter()
         supplied_request_id = request.headers.get("X-Request-ID", "")
         request_id = (
             supplied_request_id
@@ -64,13 +87,44 @@ def create_app() -> FastAPI:
         )
         request.state.request_id = request_id
 
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            logger.error(
+                "http_request_failed",
+                extra={
+                    "request_id": request_id,
+                    "method": request.method,
+                    "route": _request_route_template(request),
+                    "status_code": 500,
+                    "duration_ms": int((perf_counter() - started) * 1000),
+                    "outcome": "server_error",
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            raise
+
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         if settings.app_env is AppEnvironment.PRODUCTION:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+        log_level = logging.ERROR if response.status_code >= 500 else logging.INFO
+        logger.log(
+            log_level,
+            "http_request_completed",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "route": _request_route_template(request),
+                "status_code": response.status_code,
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "outcome": _request_outcome(response.status_code),
+            },
+        )
+
         return response
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)

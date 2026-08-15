@@ -5,6 +5,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -188,9 +189,15 @@ async def execute_report_processing_job(
         )
     except Exception as exc:
         logger.error(
-            "Unexpected report-processing failure for job %s (%s)",
-            job_id,
-            type(exc).__name__,
+            "report_processing_unexpected_failure",
+            extra={
+                "job_id": str(job_id),
+                "outcome": "failed",
+                "error_code": "processing_internal_error",
+                "exception_type": type(exc).__name__,
+                "attempt_count": claim.attempt_count,
+                "max_attempts": claim.max_attempts,
+            },
         )
         return await _fail_claim(
             claim,
@@ -222,14 +229,55 @@ async def _execute_default_report_processing_job(job_id: UUID) -> ReportProcessi
 def process_report_upload(self, job_id: str) -> dict[str, str]:
     """Process one durable job; safe deferrals retain the original Celery task UUID."""
 
+    started = perf_counter()
+    task_request = getattr(self, "request", None)
+    task_id = getattr(task_request, "id", None)
+
     try:
         parsed_job_id = UUID(job_id)
     except (TypeError, ValueError):
+        logger.warning(
+            "report_processing_task_rejected",
+            extra={
+                "task_id": task_id,
+                "outcome": "rejected",
+                "duration_ms": int((perf_counter() - started) * 1000),
+            },
+        )
         return {"status": "rejected"}
 
-    outcome = asyncio.run(_execute_default_report_processing_job(parsed_job_id))
+    try:
+        outcome = asyncio.run(_execute_default_report_processing_job(parsed_job_id))
+    except Exception as exc:
+        logger.error(
+            "report_processing_task_crashed",
+            extra={
+                "task_id": task_id,
+                "job_id": str(parsed_job_id),
+                "outcome": "crashed",
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "exception_type": type(exc).__name__,
+            },
+        )
+        raise
+
+    log_level = logging.WARNING if outcome.status in {"failed", "retrying"} else logging.INFO
+
+    logger.log(
+        log_level,
+        "report_processing_task_outcome",
+        extra={
+            "task_id": task_id,
+            "job_id": str(parsed_job_id),
+            "outcome": outcome.status,
+            "retry_after_seconds": (outcome.retry_after_seconds),
+            "duration_ms": int((perf_counter() - started) * 1000),
+        },
+    )
+
     if outcome.retry_after_seconds is not None:
         raise self.retry(countdown=outcome.retry_after_seconds)
+
     return {"status": outcome.status}
 
 

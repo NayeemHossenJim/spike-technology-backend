@@ -3,8 +3,10 @@ from __future__ import annotations
 from celery import Celery
 
 from app.core.config import get_settings
+from app.core.logging import configure_logging
 
 settings = get_settings()
+configure_logging(settings)
 
 celery_app = Celery(
     "spike_backend",
@@ -22,6 +24,7 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
+    worker_hijack_root_logger=False,
     broker_connection_retry=True,
     broker_connection_retry_on_startup=True,
     worker_cancel_long_running_tasks_on_connection_loss=True,
