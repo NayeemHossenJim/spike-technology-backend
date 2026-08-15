@@ -6,12 +6,14 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
+from redis.exceptions import RedisError
 
 from app.core.aws import build_aws_client_config
 from app.core.config import Settings, get_settings
 from app.db.session import create_database_engine, get_session
 from app.main import create_app
 from app.services.email import SesEmailSender
+from app.services.infrastructure_metrics import load_infrastructure_metrics
 from app.services.redis import create_redis_client, get_redis
 from app.services.s3_storage import Boto3S3UploadGateway
 
@@ -143,6 +145,11 @@ def test_ses_sender_uses_shared_aws_client_policy() -> None:
     assert kwargs["config"].read_timeout == settings.aws_read_timeout_seconds
 
 
+class HealthySession:
+    async def execute(self, _statement) -> None:
+        return None
+
+
 class SlowSession:
     async def execute(self, _statement) -> None:
         await asyncio.sleep(2)
@@ -151,6 +158,49 @@ class SlowSession:
 class HealthyRedis:
     async def ping(self) -> bool:
         return True
+
+
+class FailingRedis:
+    async def ping(self) -> bool:
+        raise RedisError("redis unavailable")
+
+
+@pytest.mark.asyncio
+async def test_infrastructure_metrics_report_healthy_dependencies() -> None:
+    snapshot = await load_infrastructure_metrics(
+        session=HealthySession(),  # type: ignore[arg-type]
+        redis=HealthyRedis(),  # type: ignore[arg-type]
+        timeout_seconds=0.1,
+    )
+
+    assert snapshot.postgresql_available is True
+    assert snapshot.redis_available is True
+    assert snapshot.postgresql_probe_duration_seconds >= 0
+    assert snapshot.redis_probe_duration_seconds >= 0
+
+
+@pytest.mark.asyncio
+async def test_infrastructure_metrics_probe_dependencies_independently() -> None:
+    snapshot = await load_infrastructure_metrics(
+        session=SlowSession(),  # type: ignore[arg-type]
+        redis=HealthyRedis(),  # type: ignore[arg-type]
+        timeout_seconds=0.01,
+    )
+
+    assert snapshot.postgresql_available is False
+    assert snapshot.redis_available is True
+
+
+@pytest.mark.asyncio
+async def test_infrastructure_metrics_report_redis_failure() -> None:
+    snapshot = await load_infrastructure_metrics(
+        session=HealthySession(),  # type: ignore[arg-type]
+        redis=FailingRedis(),  # type: ignore[arg-type]
+        timeout_seconds=0.1,
+    )
+
+    assert snapshot.postgresql_available is True
+    assert snapshot.redis_available is False
 
 
 async def override_slow_session():

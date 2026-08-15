@@ -16,10 +16,12 @@ from app.core.config import Settings, get_settings
 from app.core.metrics import (
     PROMETHEUS_CONTENT_TYPE,
     metrics_registry,
+    render_infrastructure_metrics,
     render_report_processing_metrics,
 )
 from app.db.session import get_session
 from app.schemas.health import HealthResponse
+from app.services.infrastructure_metrics import load_infrastructure_metrics
 from app.services.processing_metrics import load_report_processing_metrics
 from app.services.redis import get_redis
 
@@ -59,6 +61,7 @@ def _require_metrics_access(
 @router.get("/metrics", include_in_schema=False)
 async def operational_metrics(
     session: Annotated[AsyncSession, Depends(get_session)],
+    redis: Annotated[Redis, Depends(get_redis)],
     settings: Annotated[Settings, Depends(get_settings)],
     authorization: Annotated[
         str | None,
@@ -70,25 +73,34 @@ async def operational_metrics(
         authorization,
     )
 
+    infrastructure_snapshot = await load_infrastructure_metrics(
+        session=session,
+        redis=redis,
+        timeout_seconds=settings.health_check_timeout_seconds,
+    )
+
     processing_snapshot = None
 
-    try:
-        async with asyncio.timeout(settings.health_check_timeout_seconds):
-            processing_snapshot = await load_report_processing_metrics(
-                session=session,
+    if infrastructure_snapshot.postgresql_available:
+        try:
+            async with asyncio.timeout(settings.health_check_timeout_seconds):
+                processing_snapshot = await load_report_processing_metrics(
+                    session=session,
+                )
+        except (TimeoutError, SQLAlchemyError) as exc:
+            logger.warning(
+                "report_processing_metrics_unavailable",
+                extra={
+                    "outcome": "unavailable",
+                    "exception_type": type(exc).__name__,
+                    "phase": "metrics",
+                },
             )
-    except (TimeoutError, SQLAlchemyError) as exc:
-        logger.warning(
-            "report_processing_metrics_unavailable",
-            extra={
-                "outcome": "unavailable",
-                "exception_type": type(exc).__name__,
-                "phase": "metrics",
-            },
-        )
 
-    content = metrics_registry.render_prometheus() + render_report_processing_metrics(
-        processing_snapshot
+    content = (
+        metrics_registry.render_prometheus()
+        + render_infrastructure_metrics(infrastructure_snapshot)
+        + render_report_processing_metrics(processing_snapshot)
     )
 
     return Response(

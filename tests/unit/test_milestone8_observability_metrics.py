@@ -7,17 +7,34 @@ from pytest import MonkeyPatch, fixture
 from app.api.v1 import health as health_api
 from app.core.config import get_settings
 from app.core.metrics import (
+    InfrastructureMetricsSnapshot,
     MetricsRegistry,
     ReportProcessingMetricsSnapshot,
     metrics_registry,
+    render_infrastructure_metrics,
     render_report_processing_metrics,
 )
 from app.main import create_app
 
 
 @fixture(autouse=True)
-def stub_processing_metrics_loader(monkeypatch: MonkeyPatch) -> None:
-    async def load_stub(
+def stub_operational_metrics_loaders(monkeypatch: MonkeyPatch) -> None:
+    async def load_infrastructure_stub(
+        *,
+        session: object,
+        redis: object,
+        timeout_seconds: float,
+    ) -> InfrastructureMetricsSnapshot:
+        del session, redis, timeout_seconds
+
+        return InfrastructureMetricsSnapshot(
+            postgresql_available=True,
+            postgresql_probe_duration_seconds=0.001,
+            redis_available=True,
+            redis_probe_duration_seconds=0.002,
+        )
+
+    async def load_processing_stub(
         *,
         session: object,
     ) -> ReportProcessingMetricsSnapshot:
@@ -32,8 +49,13 @@ def stub_processing_metrics_loader(monkeypatch: MonkeyPatch) -> None:
 
     monkeypatch.setattr(
         health_api,
+        "load_infrastructure_metrics",
+        load_infrastructure_stub,
+    )
+    monkeypatch.setattr(
+        health_api,
         "load_report_processing_metrics",
-        load_stub,
+        load_processing_stub,
     )
 
 
@@ -114,6 +136,22 @@ def test_unknown_http_methods_are_collapsed() -> None:
     assert "CUSTOM-USER-CONTROLLED" not in rendered
 
 
+def test_infrastructure_metrics_render_availability_and_probe_latency() -> None:
+    snapshot = InfrastructureMetricsSnapshot(
+        postgresql_available=True,
+        postgresql_probe_duration_seconds=0.012,
+        redis_available=False,
+        redis_probe_duration_seconds=0.034,
+    )
+
+    rendered = render_infrastructure_metrics(snapshot)
+
+    assert "spike_postgresql_available 1" in rendered
+    assert "spike_postgresql_probe_duration_seconds 0.012" in rendered
+    assert "spike_redis_available 0" in rendered
+    assert "spike_redis_probe_duration_seconds 0.034" in rendered
+
+
 def test_processing_metrics_render_durable_job_state() -> None:
     snapshot = ReportProcessingMetricsSnapshot(
         status_counts={
@@ -187,6 +225,8 @@ async def test_metrics_endpoint_uses_route_templates_and_omits_query_data() -> N
 
         assert "spike_http_requests_total" in rendered
         assert "spike_http_request_duration_seconds" in rendered
+        assert "spike_postgresql_available 1" in rendered
+        assert "spike_redis_available 1" in rendered
         assert "spike_report_processing_metrics_available" in rendered
     finally:
         metrics_registry.reset()
@@ -251,6 +291,8 @@ async def test_configured_metrics_token_allows_valid_bearer_token() -> None:
 
         assert response.status_code == 200
         assert "spike_http_requests_total" in response.text
+        assert "spike_postgresql_available 1" in response.text
+        assert "spike_redis_available 1" in response.text
         assert "spike_report_processing_metrics_available" in response.text
         assert token not in response.text
     finally:

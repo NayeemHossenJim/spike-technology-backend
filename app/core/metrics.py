@@ -58,6 +58,14 @@ class ReportProcessingMetricsSnapshot:
     stale_leases: int
 
 
+@dataclass(frozen=True, slots=True)
+class InfrastructureMetricsSnapshot:
+    postgresql_available: bool
+    postgresql_probe_duration_seconds: float
+    redis_available: bool
+    redis_probe_duration_seconds: float
+
+
 def _normalize_method(method: str) -> str:
     normalized = method.upper()
     if normalized in _ALLOWED_HTTP_METHODS:
@@ -78,6 +86,39 @@ def _escape_label(value: str) -> str:
 
 def _format_number(value: float) -> str:
     return f"{value:.6f}".rstrip("0").rstrip(".") or "0"
+
+
+def render_infrastructure_metrics(
+    snapshot: InfrastructureMetricsSnapshot,
+) -> str:
+    lines = [
+        "# HELP spike_postgresql_available Whether PostgreSQL responded to the metrics probe.",
+        "# TYPE spike_postgresql_available gauge",
+        f"spike_postgresql_available {1 if snapshot.postgresql_available else 0}",
+        (
+            "# HELP spike_postgresql_probe_duration_seconds "
+            "Duration of the most recent PostgreSQL metrics probe."
+        ),
+        "# TYPE spike_postgresql_probe_duration_seconds gauge",
+        (
+            "spike_postgresql_probe_duration_seconds "
+            f"{_format_number(max(0.0, snapshot.postgresql_probe_duration_seconds))}"
+        ),
+        "# HELP spike_redis_available Whether Redis responded to the metrics probe.",
+        "# TYPE spike_redis_available gauge",
+        f"spike_redis_available {1 if snapshot.redis_available else 0}",
+        (
+            "# HELP spike_redis_probe_duration_seconds "
+            "Duration of the most recent Redis metrics probe."
+        ),
+        "# TYPE spike_redis_probe_duration_seconds gauge",
+        (
+            "spike_redis_probe_duration_seconds "
+            f"{_format_number(max(0.0, snapshot.redis_probe_duration_seconds))}"
+        ),
+    ]
+
+    return "\n".join(lines) + "\n"
 
 
 def render_report_processing_metrics(
@@ -264,10 +305,12 @@ metrics_registry = MetricsRegistry()
 
 __all__ = [
     "HTTP_DURATION_BUCKETS_SECONDS",
+    "InfrastructureMetricsSnapshot",
     "MetricsRegistry",
     "PROMETHEUS_CONTENT_TYPE",
     "REPORT_PROCESSING_STATUSES",
     "ReportProcessingMetricsSnapshot",
     "metrics_registry",
+    "render_infrastructure_metrics",
     "render_report_processing_metrics",
 ]
