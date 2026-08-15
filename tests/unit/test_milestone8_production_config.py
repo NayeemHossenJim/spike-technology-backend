@@ -14,6 +14,7 @@ def production_settings(**overrides: object) -> Settings:
         "celery_broker_url": "rediss://redis.internal:6379/0",
         "celery_result_backend": "rediss://redis.internal:6379/1",
         "jwt_secret_key": "a" * 64,
+        "metrics_bearer_token": "m" * 48,
         "frontend_url": "https://app.example.com",
         "cors_origins": ["https://app.example.com"],
         "trusted_hosts": ["api.example.com"],
@@ -109,3 +110,38 @@ def test_production_requires_stripe() -> None:
 def test_production_requires_gemini() -> None:
     with pytest.raises(ValidationError, match="GEMINI_ENABLED"):
         production_settings(gemini_enabled=False)
+
+
+def test_production_requires_metrics_bearer_token() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="METRICS_BEARER_TOKEN",
+    ):
+        production_settings(metrics_bearer_token=None)
+
+
+def test_production_rejects_short_metrics_bearer_token() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="METRICS_BEARER_TOKEN",
+    ):
+        production_settings(metrics_bearer_token="too-short")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "<generate-a-unique-high-entropy-metrics-token>",
+        "replace-this-with-a-real-metrics-token-123456789",
+        "change-me-metrics-token-12345678901234567890",
+        "metrics-placeholder-token-12345678901234567890",
+    ],
+)
+def test_production_rejects_placeholder_metrics_tokens(
+    value: str,
+) -> None:
+    with pytest.raises(
+        ValidationError,
+        match="METRICS_BEARER_TOKEN",
+    ):
+        production_settings(metrics_bearer_token=value)

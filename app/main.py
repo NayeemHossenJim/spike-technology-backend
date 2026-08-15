@@ -13,6 +13,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.api.v1.router import api_router
 from app.core.config import AppEnvironment, get_settings
 from app.core.logging import configure_logging
+from app.core.metrics import metrics_registry
 from app.db.session import dispose_database
 from app.services.gemini_gateway import get_gemini_gateway
 from app.services.redis import close_redis
@@ -90,14 +91,24 @@ def create_app() -> FastAPI:
         try:
             response = await call_next(request)
         except Exception as exc:
+            duration_seconds = perf_counter() - started
+            route = _request_route_template(request)
+
+            metrics_registry.observe_http_request(
+                method=request.method,
+                route=route,
+                status_code=500,
+                duration_seconds=duration_seconds,
+            )
+
             logger.error(
                 "http_request_failed",
                 extra={
                     "request_id": request_id,
                     "method": request.method,
-                    "route": _request_route_template(request),
+                    "route": route,
                     "status_code": 500,
-                    "duration_ms": int((perf_counter() - started) * 1000),
+                    "duration_ms": int(duration_seconds * 1000),
                     "outcome": "server_error",
                     "exception_type": type(exc).__name__,
                 },
@@ -111,6 +122,16 @@ def create_app() -> FastAPI:
         if settings.app_env is AppEnvironment.PRODUCTION:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
+        duration_seconds = perf_counter() - started
+        route = _request_route_template(request)
+
+        metrics_registry.observe_http_request(
+            method=request.method,
+            route=route,
+            status_code=response.status_code,
+            duration_seconds=duration_seconds,
+        )
+
         log_level = logging.ERROR if response.status_code >= 500 else logging.INFO
         logger.log(
             log_level,
@@ -118,9 +139,9 @@ def create_app() -> FastAPI:
             extra={
                 "request_id": request_id,
                 "method": request.method,
-                "route": _request_route_template(request),
+                "route": route,
                 "status_code": response.status_code,
-                "duration_ms": int((perf_counter() - started) * 1000),
+                "duration_ms": int(duration_seconds * 1000),
                 "outcome": _request_outcome(response.status_code),
             },
         )

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import text
@@ -11,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
+from app.core.metrics import PROMETHEUS_CONTENT_TYPE, metrics_registry
 from app.db.session import get_session
 from app.schemas.health import HealthResponse
 from app.services.redis import get_redis
@@ -21,6 +23,49 @@ router = APIRouter(prefix="/health", tags=["Health"])
 @router.get("/live", response_model=HealthResponse, include_in_schema=False)
 async def liveness() -> HealthResponse:
     return HealthResponse(status="ok")
+
+
+def _require_metrics_access(
+    settings: Settings,
+    authorization: str | None,
+) -> None:
+    configured = settings.metrics_bearer_token
+
+    if configured is None:
+        return
+
+    supplied = ""
+    if authorization:
+        scheme, separator, credentials = authorization.partition(" ")
+        if separator and scheme.lower() == "bearer":
+            supplied = credentials.strip()
+
+    expected = configured.get_secret_value()
+
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found.",
+        )
+
+
+@router.get("/metrics", include_in_schema=False)
+async def operational_metrics(
+    settings: Annotated[Settings, Depends(get_settings)],
+    authorization: Annotated[
+        str | None,
+        Header(alias="Authorization"),
+    ] = None,
+) -> Response:
+    _require_metrics_access(
+        settings,
+        authorization,
+    )
+
+    return Response(
+        content=metrics_registry.render_prometheus(),
+        media_type=PROMETHEUS_CONTENT_TYPE,
+    )
 
 
 @router.get("/ready", response_model=HealthResponse, include_in_schema=False)

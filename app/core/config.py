@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     redis_socket_connect_timeout_seconds: int = 5
     redis_socket_timeout_seconds: int = 5
     health_check_timeout_seconds: int = 3
+    metrics_bearer_token: SecretStr | None = None
 
     jwt_secret_key: SecretStr
     jwt_algorithm: str = "HS256"
@@ -115,6 +116,14 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError("LOG_LEVEL must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
         return normalized
+
+    @field_validator("metrics_bearer_token", mode="before")
+    @classmethod
+    def normalize_optional_metrics_token(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
 
     @field_validator("gemini_model", mode="before")
     @classmethod
@@ -290,6 +299,29 @@ class Settings(BaseSettings):
         if self.app_env is AppEnvironment.PRODUCTION:
             if "replace-this" in secret or "change-me" in secret:
                 raise ValueError("A real JWT_SECRET_KEY is required in production")
+
+            metrics_token = (
+                self.metrics_bearer_token.get_secret_value()
+                if self.metrics_bearer_token is not None
+                else ""
+            )
+
+            if not metrics_token:
+                raise ValueError("METRICS_BEARER_TOKEN is required in production")
+
+            if len(metrics_token) < 32:
+                raise ValueError("METRICS_BEARER_TOKEN must be at least 32 characters long")
+
+            normalized_metrics_token = metrics_token.lower()
+            if (
+                metrics_token.startswith("<")
+                or "replace-this" in normalized_metrics_token
+                or "change-me" in normalized_metrics_token
+                or "placeholder" in normalized_metrics_token
+                or "generate-a-" in normalized_metrics_token
+            ):
+                raise ValueError("A real METRICS_BEARER_TOKEN is required in production")
+
             if not self.stripe_enabled:
                 raise ValueError("STRIPE_ENABLED must be true in production")
             if not self.gemini_enabled:
