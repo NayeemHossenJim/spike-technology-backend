@@ -1,0 +1,61 @@
+groups:
+  - name: spike-backend-production
+    rules:
+      - alert: SpikeUnhandledApplicationErrors
+        expr: increase(spike_unhandled_errors_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Spike API is producing unhandled application errors
+          description: Inspect structured API error logs and correlate using request_id.
+
+      - alert: SpikeHighHttpServerErrorRate
+        expr: |
+          (
+            sum(rate(spike_http_requests_total{status_class="5xx"}[5m]))
+            /
+            clamp_min(sum(rate(spike_http_requests_total[5m])), 0.001)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Spike API HTTP 5xx rate is above five percent
+          description: Inspect request metrics and structured logs before considering rollback.
+
+      - alert: SpikePostgresqlUnavailable
+        expr: spike_postgresql_available == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Spike API cannot reach PostgreSQL
+          description: Check database availability, connectivity, credentials, and recent deployments.
+
+      - alert: SpikeRedisUnavailable
+        expr: spike_redis_available == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Spike API cannot reach Redis
+          description: Check Redis availability, connectivity, persistence, and recent deployments.
+
+      - alert: SpikeProcessingMetricsUnavailable
+        expr: spike_report_processing_metrics_available == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Durable report-processing metrics are unavailable
+          description: Check PostgreSQL connectivity and report-processing metric queries.
+
+      - alert: SpikeStaleProcessingLeases
+        expr: spike_report_processing_stale_leases > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Spike has stale report-processing worker leases
+          description: Check Celery worker health, queue state, retries, and processing logs.

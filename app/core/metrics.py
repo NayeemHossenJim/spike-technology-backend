@@ -196,6 +196,7 @@ class MetricsRegistry:
             tuple[str, str, str],
             _HTTPSeries,
         ] = {}
+        self._unhandled_errors = 0
 
     def observe_http_request(
         self,
@@ -226,9 +227,14 @@ class MetricsRegistry:
                 if safe_duration <= upper_bound:
                     series.bucket_counts[index] += 1
 
+    def observe_unhandled_error(self) -> None:
+        with self._lock:
+            self._unhandled_errors += 1
+
     def reset(self) -> None:
         with self._lock:
             self._http.clear()
+            self._unhandled_errors = 0
 
     def render_prometheus(self) -> str:
         with self._lock:
@@ -243,10 +249,17 @@ class MetricsRegistry:
                 )
                 for key, value in self._http.items()
             ]
+            unhandled_errors = self._unhandled_errors
 
         snapshot.sort(key=lambda item: item[0])
 
         lines = [
+            (
+                "# HELP spike_unhandled_errors_total "
+                "Total unhandled application exceptions observed by the API."
+            ),
+            "# TYPE spike_unhandled_errors_total counter",
+            f"spike_unhandled_errors_total {unhandled_errors}",
             "# HELP spike_http_requests_total Total HTTP requests processed by the API.",
             "# TYPE spike_http_requests_total counter",
         ]

@@ -59,6 +59,21 @@ def stub_operational_metrics_loaders(monkeypatch: MonkeyPatch) -> None:
     )
 
 
+def test_unhandled_error_metric_is_counted_and_reset() -> None:
+    registry = MetricsRegistry()
+
+    registry.observe_unhandled_error()
+    registry.observe_unhandled_error()
+
+    rendered = registry.render_prometheus()
+
+    assert "spike_unhandled_errors_total 2" in rendered
+
+    registry.reset()
+
+    assert "spike_unhandled_errors_total 0" in registry.render_prometheus()
+
+
 def test_http_metrics_aggregate_by_low_cardinality_labels() -> None:
     registry = MetricsRegistry()
 

@@ -457,25 +457,34 @@ Code cannot reach production without automated quality gates.
 
 ### Work
 
-- [ ] structured JSON production logs;
-- [ ] request/correlation IDs;
-- [ ] error tracking;
-- [ ] API health endpoint;
-- [ ] API readiness endpoint;
-- [ ] worker monitoring;
-- [ ] Celery failure monitoring;
-- [ ] PostgreSQL monitoring;
-- [ ] Redis monitoring;
-- [ ] latency metrics;
-- [ ] HTTP error-rate metrics;
-- [ ] job failure metrics;
-- [ ] alerting;
-- [ ] operational runbook.
+- [x] structured JSON production logs;
+- [x] request/correlation IDs;
+- [x] error tracking;
+- [x] API health endpoint;
+- [x] API readiness endpoint;
+- [x] worker monitoring;
+- [x] Celery failure monitoring;
+- [x] PostgreSQL monitoring;
+- [x] Redis monitoring;
+- [x] latency metrics;
+- [x] HTTP error-rate metrics;
+- [x] job failure metrics;
+- [x] alerting;
+- [x] operational runbook.
 
 ### Exit criteria
 
 Operational failures can be detected and diagnosed without direct server
 inspection.
+
+**Implementation status: COMPLETE.**
+
+The backend now provides structured production logs, correlation IDs, safe
+exception/error signals, protected Prometheus-compatible API/infrastructure/job
+metrics, version-controlled alert rules, and an operational response runbook.
+Loading the alert rules into the production monitoring platform and routing
+notifications to the approved operational destination remain deployment
+activation tasks for staging/production.
 
 ---
 

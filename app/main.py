@@ -100,6 +100,7 @@ def create_app() -> FastAPI:
                 status_code=500,
                 duration_seconds=duration_seconds,
             )
+            metrics_registry.observe_unhandled_error()
 
             logger.error(
                 "http_request_failed",
