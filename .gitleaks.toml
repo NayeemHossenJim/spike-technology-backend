@@ -1,0 +1,96 @@
+title = "Spike Technology Gitleaks policy"
+
+[extend]
+useDefault = true
+
+# README examples use explicit placeholder bearer tokens.
+[[rules]]
+id = "curl-auth-header"
+
+    [[rules.allowlists]]
+    description = "README bearer-token placeholders only"
+    condition = "AND"
+    regexTarget = "line"
+    paths = [
+        '''(?:^|/)README\.md$''',
+    ]
+    regexes = [
+        '''(?i)Authorization:\s*Bearer\s+(?:PASTE|YOUR|REPLACE|EXAMPLE|<)[A-Z0-9_{}<>.-]*''',
+    ]
+
+# Generic credential detection catches deterministic password fixtures and
+# idempotency keys used by integration tests.
+[[rules]]
+id = "generic-api-key"
+
+    [[rules.allowlists]]
+    description = "Authentication integration-test password fields"
+    condition = "AND"
+    regexTarget = "line"
+    paths = [
+        '''(?:^|/)tests/integration/test_auth_flow\.py$''',
+    ]
+    regexes = [
+        '''(?i)["'](?:new_password|password)["']\s*:''',
+    ]
+
+    [[rules.allowlists]]
+    description = "README password placeholder example only"
+    condition = "AND"
+    regexTarget = "line"
+    paths = [
+        '''(?:^|/)README\.md$''',
+    ]
+    regexes = [
+        '''(?i)["']new_password["']\s*:\s*["'][^"']*<[^<>"']+>[^"']*["']''',
+    ]
+
+    [[rules.allowlists]]
+    description = "Admin AI-credit idempotency-key fixture"
+    condition = "AND"
+    regexTarget = "line"
+    paths = [
+        '''(?:^|/)tests/integration/test_milestone7_admin_ai_credit_adjustments\.py$''',
+    ]
+    regexes = [
+        '''["']Idempotency-Key["']\s*:''',
+    ]
+
+    [[rules.allowlists]]
+    description = "AI conversation helper second argument is an idempotency key"
+    condition = "AND"
+    regexTarget = "line"
+    paths = [
+        '''(?:^|/)tests/integration/test_milestone5_conversations\.py$''',
+    ]
+    regexes = [
+        '''ai_headers\(\s*token\s*,\s*["']''',
+    ]
+
+# These Stripe-looking values are deliberately malformed/short test fixtures.
+# The patterns are intentionally length-bounded so real Stripe credentials
+# remain detectable.
+[[rules]]
+id = "stripe-access-token"
+
+    [[rules.allowlists]]
+    description = "Deliberately invalid Stripe secret-key configuration fixture"
+    condition = "AND"
+    regexTarget = "line"
+    paths = [
+        '''(?:^|/)tests/unit/test_milestone2_contract\.py$''',
+    ]
+    regexes = [
+        '''stripe_secret_key\s*=\s*["']sk_live_[a-z]{10}["']''',
+    ]
+
+    [[rules.allowlists]]
+    description = "Short Stripe test secret-key integration fixture"
+    condition = "AND"
+    regexTarget = "line"
+    paths = [
+        '''(?:^|/)tests/integration/test_milestone2_billing\.py$''',
+    ]
+    regexes = [
+        '''stripe_secret_key.*SecretStr\(["']sk_test_[a-z]{11}["']\)''',
+    ]

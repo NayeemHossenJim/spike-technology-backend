@@ -274,7 +274,7 @@ Then set the new password with that verified OTP:
 ```bash
 curl -X POST http://localhost:8000/api/v1/auth/reset-password \
   -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","otp":"PASTE_SIX_DIGIT_OTP_HERE","new_password":"NewCorrectHorseBattery9"}'
+  -d '{"email":"test@example.com","otp":"PASTE_SIX_DIGIT_OTP_HERE","new_password":"<NEW_PASSWORD>"}'
 ```
 
 ### Login
