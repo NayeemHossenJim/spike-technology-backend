@@ -518,21 +518,33 @@ security defect remains.
 
 ### Work
 
-- [ ] API load testing;
-- [ ] authentication load testing;
-- [ ] upload load testing;
-- [ ] database concurrency testing;
-- [ ] AI-credit concurrency testing;
-- [ ] Celery throughput testing;
-- [ ] large-report processing testing;
-- [ ] dashboard-generation testing;
-- [ ] PDF-generation testing;
-- [ ] failure/retry behavior validation;
-- [ ] establish acceptable latency targets.
+- [x] API load testing;
+- [x] authentication load testing;
+- [x] upload load testing;
+- [x] database concurrency testing;
+- [x] AI-credit concurrency testing;
+- [x] Celery throughput testing;
+- [x] large-report processing testing;
+- [x] dashboard-generation testing;
+- [x] PDF-generation testing;
+- [x] failure/retry behavior validation;
+- [x] establish acceptable latency targets.
 
 ### Exit criteria
 
 The backend meets agreed performance targets without correctness failures.
+
+**Implementation status: COMPLETE.**
+
+Stage 8.9 established local engineering performance baselines for API,
+authentication, upload, database, AI-credit, Celery, report-processing,
+dashboard and PDF workloads. Correctness and concurrency invariants remained
+intact throughout the validated workloads. The accepted targets and measured
+evidence are documented in `docs/performance_targets.md`.
+
+These measurements are engineering release baselines, not public production
+SLAs. Staging and production capacity must be revalidated on their actual
+infrastructure and representative customer workloads.
 
 ---
 
@@ -634,7 +646,7 @@ Milestone 8 is complete only when:
 - [ ] CI/CD release gates are active;
 - [ ] monitoring and alerting are active;
 - [ ] security release audit passes;
-- [ ] performance validation passes;
+- [x] performance validation passes;
 - [ ] frontend/backend E2E passes in staging;
 - [ ] UAT passes;
 - [ ] rollback procedure is tested;
