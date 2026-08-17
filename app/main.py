@@ -120,7 +120,10 @@ def create_app() -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
-        if settings.app_env is AppEnvironment.PRODUCTION:
+        if settings.app_env in {
+            AppEnvironment.STAGING,
+            AppEnvironment.PRODUCTION,
+        }:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
         duration_seconds = perf_counter() - started

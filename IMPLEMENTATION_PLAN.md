@@ -576,9 +576,18 @@ infrastructure and representative customer workloads.
 
 The frontend and backend complete every supported v1 user journey in staging.
 
+**Ownership:** frontend implementation and frontend API integration are owned
+by the frontend team. The backend team provides the staging API, API contract,
+backend fixes and integration support. This stage remains pending until the
+frontend team confirms the required v1 journeys.
+
 ---
 
 ## Stage 8.11 - Staging and UAT
+
+The backend team owns backend staging deployment, migrations, infrastructure
+validation, backend smoke testing, rollback and database restore testing.
+Frontend E2E execution and UAT sign-off are shared/external acceptance gates.
 
 ### Work
 

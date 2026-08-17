@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class AppEnvironment(StrEnum):
     DEVELOPMENT = "development"
     TEST = "test"
+    STAGING = "staging"
     PRODUCTION = "production"
 
 
@@ -291,12 +292,18 @@ class Settings(BaseSettings):
                 parsed = urlparse(url)
                 if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                     raise ValueError(f"{setting_name.upper()} must be an absolute HTTP(S) URL")
-                if self.app_env is AppEnvironment.PRODUCTION and parsed.scheme != "https":
+                if (
+                    self.app_env in {AppEnvironment.STAGING, AppEnvironment.PRODUCTION}
+                    and parsed.scheme != "https"
+                ):
                     raise ValueError(f"{setting_name.upper()} must use HTTPS in production")
             if "{CHECKOUT_SESSION_ID}" not in self.stripe_checkout_success_url:
                 raise ValueError("STRIPE_CHECKOUT_SUCCESS_URL must include {CHECKOUT_SESSION_ID}")
 
-        if self.app_env is AppEnvironment.PRODUCTION:
+        if self.app_env in {
+            AppEnvironment.STAGING,
+            AppEnvironment.PRODUCTION,
+        }:
             if "replace-this" in secret or "change-me" in secret:
                 raise ValueError("A real JWT_SECRET_KEY is required in production")
 
@@ -347,6 +354,10 @@ class Settings(BaseSettings):
             database = urlparse(self.database_url)
             if database.scheme not in {"postgresql", "postgresql+asyncpg"}:
                 raise ValueError("DATABASE_URL must use PostgreSQL in production")
+
+            database_hostname = (database.hostname or "").lower()
+            if database_hostname in {"localhost", "127.0.0.1", "::1"}:
+                raise ValueError("DATABASE_URL cannot use localhost in staging/production")
 
             for setting_name in (
                 "redis_url",
