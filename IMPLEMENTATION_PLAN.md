@@ -492,20 +492,20 @@ activation tasks for staging/production.
 
 ### Work
 
-- [ ] dependency vulnerability scan;
-- [ ] authentication regression;
-- [ ] authorization regression;
-- [ ] tenant-isolation regression;
-- [ ] admin permission-matrix regression;
-- [ ] JWT/session-revocation regression;
-- [ ] Stripe webhook replay tests;
-- [ ] upload-abuse tests;
-- [ ] rate-limit tests;
-- [ ] sensitive-response inspection;
-- [ ] sensitive-log inspection;
-- [ ] AI-credit concurrency tests;
-- [ ] audit immutability tests;
-- [ ] secrets scan.
+- [x] dependency vulnerability scan;
+- [x] authentication regression;
+- [x] authorization regression;
+- [x] tenant-isolation regression;
+- [x] admin permission-matrix regression;
+- [x] JWT/session-revocation regression;
+- [x] Stripe webhook replay tests;
+- [x] upload-abuse tests;
+- [x] rate-limit tests;
+- [x] sensitive-response inspection;
+- [x] sensitive-log inspection;
+- [x] AI-credit concurrency tests;
+- [x] audit immutability tests;
+- [x] secrets scan.
 
 ### Exit criteria
 

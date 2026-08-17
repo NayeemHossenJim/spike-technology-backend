@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from io import BytesIO
-from struct import pack, pack_into
+from struct import pack, pack_into, unpack_from
 from uuid import uuid4
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import pytest
 from pydantic import ValidationError
 
+import app.services.uploads as uploads_service
 from app.core.config import Settings
 from app.main import create_app
 from app.models.upload import MAX_REPORT_UPLOAD_BYTES
@@ -45,12 +46,67 @@ def upload_settings(**overrides) -> Settings:
     return Settings(_env_file=None, **values)
 
 
+def _mark_zip_entry_encrypted(content: bytes, filename: str) -> bytes:
+    data = bytearray(content)
+    encoded_name = filename.encode("utf-8")
+    offset = 0
+
+    while True:
+        offset = data.find(b"PK\x01\x02", offset)
+
+        if offset < 0:
+            raise AssertionError(f"ZIP central-directory entry not found: {filename}")
+
+        name_length, extra_length, comment_length = unpack_from(
+            "<HHH",
+            data,
+            offset + 28,
+        )
+        name_start = offset + 46
+        name_end = name_start + name_length
+
+        if bytes(data[name_start:name_end]) == encoded_name:
+            flags = unpack_from("<H", data, offset + 8)[0]
+            pack_into("<H", data, offset + 8, flags | 0x1)
+            return bytes(data)
+
+        offset = name_end + extra_length + comment_length
+
+
+def _corrupt_stored_zip_entry(content: bytes, filename: str) -> bytes:
+    with ZipFile(BytesIO(content)) as archive:
+        info = archive.getinfo(filename)
+
+    if info.compress_type != ZIP_STORED:
+        raise AssertionError("CRC corruption helper requires a stored ZIP entry.")
+
+    data = bytearray(content)
+    name_length, extra_length = unpack_from(
+        "<HH",
+        data,
+        info.header_offset + 26,
+    )
+    data_offset = info.header_offset + 30 + name_length + extra_length
+
+    if info.file_size < 1:
+        raise AssertionError("CRC corruption helper requires a non-empty ZIP entry.")
+
+    data[data_offset] ^= 0x01
+    return bytes(data)
+
+
 def xlsx_bytes(
     *,
     include_macro: bool = False,
     highly_compressed: bool = False,
+    unsafe_path: bool = False,
+    encrypted_entry: bool = False,
+    corrupt_crc: bool = False,
+    extra_entries: int = 0,
 ) -> bytes:
     output = BytesIO()
+    security_probe = "xl/worksheets/security-probe.xml"
+
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr(
             "[Content_Types].xml",
@@ -62,14 +118,55 @@ def xlsx_bytes(
         )
         archive.writestr("_rels/.rels", "<Relationships/>")
         archive.writestr("xl/workbook.xml", "<workbook/>")
+
         if include_macro:
             archive.writestr("xl/vbaProject.bin", b"macro")
+
         if highly_compressed:
-            archive.writestr("xl/worksheets/sheet1.xml", b"0" * (2 * 1024 * 1024))
-    return output.getvalue()
+            archive.writestr(
+                "xl/worksheets/sheet1.xml",
+                b"0" * (2 * 1024 * 1024),
+            )
+
+        if unsafe_path:
+            archive.writestr("../escape.xml", b"escape")
+
+        if encrypted_entry or corrupt_crc:
+            archive.writestr(
+                security_probe,
+                b"security-probe",
+                compress_type=ZIP_STORED,
+            )
+
+        for index in range(extra_entries):
+            archive.writestr(
+                f"xl/worksheets/extra-{index}.xml",
+                b"x",
+                compress_type=ZIP_STORED,
+            )
+
+    content = output.getvalue()
+
+    if encrypted_entry:
+        content = _mark_zip_entry_encrypted(
+            content,
+            security_probe,
+        )
+
+    if corrupt_crc:
+        content = _corrupt_stored_zip_entry(
+            content,
+            security_probe,
+        )
+
+    return content
 
 
-def xls_bytes(*, active_content: bool = False) -> bytes:
+def xls_bytes(
+    *,
+    active_content: bool = False,
+    encrypted_content: bool = False,
+) -> bytes:
     free_sector = 0xFFFFFFFF
     end_of_chain = 0xFFFFFFFE
     fat_sector = 0xFFFFFFFD
@@ -143,6 +240,11 @@ def xls_bytes(*, active_content: bool = False) -> bytes:
     if active_content:
         workbook[offset : offset + 4] = pack("<HH", 0x00D3, 0)
         offset += 4
+
+    if encrypted_content:
+        workbook[offset : offset + 4] = pack("<HH", 0x002F, 0)
+        offset += 4
+
     workbook[offset : offset + 4] = pack("<HH", 0x000A, 0)
 
     directory = (
@@ -282,6 +384,99 @@ def test_file_content_must_match_the_declared_report_format() -> None:
         validate_report_content("xlsx", xlsx_bytes(include_macro=True))
     with pytest.raises(SuspiciousReportContentError, match="xlsx_expansion_limit_exceeded"):
         validate_report_content("xlsx", xlsx_bytes(highly_compressed=True))
+
+
+def test_csv_control_bytes_are_rejected() -> None:
+    with pytest.raises(
+        SuspiciousReportContentError,
+        match="csv_contains_control_bytes",
+    ):
+        validate_report_content(
+            "csv",
+            b"month,revenue\nJan,\x011200\n",
+        )
+
+
+def test_encrypted_xls_is_rejected() -> None:
+    with pytest.raises(
+        SuspiciousReportContentError,
+        match="xls_encrypted_rejected",
+    ):
+        validate_report_content(
+            "xls",
+            xls_bytes(encrypted_content=True),
+        )
+
+
+def test_xlsx_archive_path_traversal_is_rejected() -> None:
+    with pytest.raises(
+        SuspiciousReportContentError,
+        match="xlsx_structure_rejected",
+    ):
+        validate_report_content(
+            "xlsx",
+            xlsx_bytes(unsafe_path=True),
+        )
+
+
+def test_xlsx_encrypted_archive_entry_is_rejected() -> None:
+    with pytest.raises(
+        SuspiciousReportContentError,
+        match="xlsx_structure_rejected",
+    ):
+        validate_report_content(
+            "xlsx",
+            xlsx_bytes(encrypted_entry=True),
+        )
+
+
+def test_xlsx_entry_count_limit_is_enforced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        uploads_service,
+        "XLSX_MAX_ENTRIES",
+        3,
+    )
+
+    with pytest.raises(
+        SuspiciousReportContentError,
+        match="xlsx_structure_rejected",
+    ):
+        validate_report_content(
+            "xlsx",
+            xlsx_bytes(extra_entries=1),
+        )
+
+
+def test_xlsx_uncompressed_size_limit_is_enforced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        uploads_service,
+        "XLSX_MAX_UNCOMPRESSED_BYTES",
+        1,
+    )
+
+    with pytest.raises(
+        SuspiciousReportContentError,
+        match="xlsx_expansion_limit_exceeded",
+    ):
+        validate_report_content(
+            "xlsx",
+            xlsx_bytes(),
+        )
+
+
+def test_xlsx_crc_corruption_is_rejected() -> None:
+    with pytest.raises(
+        SuspiciousReportContentError,
+        match="xlsx_crc_failed",
+    ):
+        validate_report_content(
+            "xlsx",
+            xlsx_bytes(corrupt_crc=True),
+        )
 
 
 class FakeS3Client:
