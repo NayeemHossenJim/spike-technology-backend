@@ -33,7 +33,7 @@ validated, merged into `develop`, and pushed to the remote repository.
 - [x] Milestone 6 - Dashboards, snapshots, exports and PDF
 - [x] Milestone 7 - Admin operations and security controls
 
-### Next milestone
+### Next milestone 
 
 **Milestone 8 - Production Readiness & Deployment**
 
