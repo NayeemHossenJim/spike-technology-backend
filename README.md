@@ -587,6 +587,12 @@ curl \
   -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
 ```
 
+Both the completion response and this read response include a `processing_jobs` list
+ordered with the batch files. Each item exposes only its job ID, report-upload ID,
+status, timestamps, safe error code, and completed row/sheet counts. Pending or rejected
+files have no job. Poll this batch resource until the required jobs are `completed`, then
+pass those job IDs as `source_processing_job_ids` when creating a dashboard snapshot.
+
 The server verifies the current immutable S3 version, exact byte count, canonical
 content type, encryption, cache policy, tenant/batch/upload metadata, ETag, and upload
 time before reading that exact version. Rejected object versions are deleted.

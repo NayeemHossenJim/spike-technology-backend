@@ -241,6 +241,13 @@ async def test_presigned_batch_is_tenant_owned_and_completes_only_verified_files
     assert len(payload["files"]) == 2
     assert gateway.security_checks == ["spike-private-test-uploads"]
 
+    pending = await client.get(
+        f"/api/v1/report-uploads/batches/{payload['id']}",
+        headers=bearer(token),
+    )
+    assert pending.status_code == 200
+    assert pending.json()["processing_jobs"] == []
+
     business_id = onboarding["business"]["id"]
     uploader_user_id = onboarding["role_assignment"]["user_id"]
     for file_payload, presign_call in zip(
@@ -292,6 +299,13 @@ async def test_presigned_batch_is_tenant_owned_and_completes_only_verified_files
         len(csv_content),
         len(xlsx_content),
     ]
+    assert [item["report_upload_id"] for item in completed_payload["processing_jobs"]] == [
+        item["id"] for item in payload["files"]
+    ]
+    assert {item["status"] for item in completed_payload["processing_jobs"]} == {"queued"}
+    assert all(item["error_code"] is None for item in completed_payload["processing_jobs"])
+    assert all(item["record_count"] is None for item in completed_payload["processing_jobs"])
+    assert all(item["sheet_count"] is None for item in completed_payload["processing_jobs"])
 
     repeated = await client.post(
         f"/api/v1/report-uploads/batches/{payload['id']}/complete",
@@ -359,6 +373,7 @@ async def test_mislabeled_or_tampered_object_is_deleted_and_rejected(
     assert rejected["status"] == "rejected"
     assert rejected["files"][0]["status"] == "rejected"
     assert rejected["files"][0]["rejection_code"] == "content_signature_mismatch"
+    assert rejected["processing_jobs"] == []
     assert len(gateway.deleted_versions) == 1
     assert gateway.objects == {}
 

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.models.base import utc_now
+from app.models.processing import ReportProcessingJob
 from app.models.upload import (
     ReportUpload,
     ReportUploadBatch,
@@ -139,6 +140,7 @@ class CreatedReportUploadBatch:
 class ReportUploadBatchResult:
     batch: ReportUploadBatch
     uploads: tuple[ReportUpload, ...]
+    processing_jobs: tuple[ReportProcessingJob, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,6 +518,26 @@ class ReportUploadService:
         )
         return tuple(result.scalars().all())
 
+    async def _processing_jobs_for_uploads(
+        self,
+        scope: TenantScope,
+        uploads: tuple[ReportUpload, ...],
+    ) -> tuple[ReportProcessingJob, ...]:
+        if not uploads:
+            return ()
+
+        upload_ids = tuple(upload.id for upload in uploads)
+        result = await self.session.execute(
+            scope.select(
+                ReportProcessingJob,
+                ReportProcessingJob.report_upload_id.in_(upload_ids),
+            )
+        )
+        jobs_by_upload_id = {job.report_upload_id: job for job in result.scalars().all()}
+        return tuple(
+            jobs_by_upload_id[upload.id] for upload in uploads if upload.id in jobs_by_upload_id
+        )
+
     async def get_batch(
         self,
         *,
@@ -531,9 +553,11 @@ class ReportUploadService:
         batch = result.scalar_one_or_none()
         if batch is None:
             return None
+        uploads = await self._batch_uploads(scope, batch_id)
         return ReportUploadBatchResult(
             batch=batch,
-            uploads=await self._batch_uploads(scope, batch_id),
+            uploads=uploads,
+            processing_jobs=await self._processing_jobs_for_uploads(scope, uploads),
         )
 
     async def _reject_object(
@@ -677,7 +701,11 @@ class ReportUploadService:
             job_ids=(job.id for job in jobs),
             dispatcher=dispatcher,
         )
-        return ReportUploadBatchResult(batch=batch, uploads=uploads)
+        return ReportUploadBatchResult(
+            batch=batch,
+            uploads=uploads,
+            processing_jobs=jobs,
+        )
 
 
 __all__ = [

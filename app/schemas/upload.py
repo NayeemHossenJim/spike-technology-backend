@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.models.processing import ReportProcessingStatus
 from app.models.upload import (
     MAX_REPORT_UPLOAD_BYTES,
     MAX_REPORT_UPLOAD_FILES_PER_BATCH,
@@ -67,12 +68,30 @@ class PresignedReportUploadRead(ReportUploadRead):
     upload: PresignedPostRead
 
 
+class ReportProcessingJobRead(BaseModel):
+    """Tenant-safe processing state exposed to the upload workflow."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    report_upload_id: UUID
+    status: ReportProcessingStatus
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error_code: str | None
+    record_count: int | None
+    sheet_count: int | None
+
+
 class ReportUploadBatchRead(BaseModel):
     id: UUID
     status: ReportUploadBatchStatus
     expires_at: datetime
     completed_at: datetime | None
     files: list[ReportUploadRead]
+    processing_jobs: list[ReportProcessingJobRead]
 
 
 class ReportUploadBatchCreatedRead(BaseModel):

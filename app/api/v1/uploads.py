@@ -12,6 +12,7 @@ from app.db.session import get_session
 from app.schemas.upload import (
     PresignedPostRead,
     PresignedReportUploadRead,
+    ReportProcessingJobRead,
     ReportUploadBatchCreate,
     ReportUploadBatchCreatedRead,
     ReportUploadBatchRead,
@@ -61,6 +62,9 @@ def _batch_read(result: ReportUploadBatchResult) -> ReportUploadBatchRead:
         expires_at=result.batch.expires_at,
         completed_at=result.batch.completed_at,
         files=[ReportUploadRead.model_validate(upload) for upload in result.uploads],
+        processing_jobs=[
+            ReportProcessingJobRead.model_validate(job) for job in result.processing_jobs
+        ],
     )
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -329,6 +329,22 @@ async def test_partial_batch_commits_one_job_before_idempotent_dispatch(
         "uploaded",
         "rejected",
     ]
+    assert len(completed_payload["processing_jobs"]) == 1
+    processing_payload = completed_payload["processing_jobs"][0]
+    assert processing_payload["report_upload_id"] == payload["files"][0]["id"]
+    assert processing_payload["status"] == "queued"
+    assert set(processing_payload) == {
+        "id",
+        "report_upload_id",
+        "status",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "finished_at",
+        "error_code",
+        "record_count",
+        "sheet_count",
+    }
     assert len(processing_dispatcher.dispatched_job_ids) == 1
 
     business_id = UUID(onboarding["business"]["id"])
@@ -346,6 +362,7 @@ async def test_partial_batch_commits_one_job_before_idempotent_dispatch(
         )
         assert len(jobs) == 1
         assert jobs[0].id == processing_dispatcher.dispatched_job_ids[0]
+        assert str(jobs[0].id) == processing_payload["id"]
         assert jobs[0].dispatch_attempt_count == 1
         assert jobs[0].last_dispatched_at is not None
 
@@ -431,7 +448,7 @@ async def test_job_claim_retry_and_completion_are_lease_guarded(
     email_sender: InMemoryEmailSender,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    _, onboarding = await onboard_owner(
+    token, onboarding = await onboard_owner(
         client,
         email_sender,
         email="processing-lifecycle@example.com",
@@ -534,6 +551,23 @@ async def test_job_claim_retry_and_completion_are_lease_guarded(
         assert completed.sheet_count == 1
         assert completed.lease_token is None
         assert completed.error_code is None
+
+    polled = await client.get(
+        f"/api/v1/report-uploads/batches/{upload.batch_id}",
+        headers=bearer(token),
+    )
+    assert polled.status_code == 200
+    polled_jobs = polled.json()["processing_jobs"]
+    assert len(polled_jobs) == 1
+    polled_job = polled_jobs[0]
+    assert polled_job["id"] == str(job_id)
+    assert polled_job["report_upload_id"] == str(upload.id)
+    assert polled_job["status"] == "completed"
+    assert datetime.fromisoformat(polled_job["started_at"]) == started_at
+    assert datetime.fromisoformat(polled_job["finished_at"]) == (started_at + timedelta(seconds=33))
+    assert polled_job["error_code"] is None
+    assert polled_job["record_count"] == 2
+    assert polled_job["sheet_count"] == 1
 
 
 @pytest.mark.integration

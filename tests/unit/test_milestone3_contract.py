@@ -574,5 +574,33 @@ def test_milestone3_openapi_exposes_only_server_owned_upload_routes() -> None:
 
     batch_properties = schema["components"]["schemas"]["ReportUploadBatchCreate"]["properties"]
     file_properties = schema["components"]["schemas"]["ReportUploadFileCreate"]["properties"]
+    batch_read_properties = schema["components"]["schemas"]["ReportUploadBatchRead"]["properties"]
+    processing_job_properties = schema["components"]["schemas"]["ReportProcessingJobRead"][
+        "properties"
+    ]
     assert list(batch_properties) == ["files"]
     assert list(file_properties) == ["filename", "content_type", "size_bytes"]
+    assert "processing_jobs" in batch_read_properties
+    assert set(processing_job_properties) == {
+        "id",
+        "report_upload_id",
+        "status",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "finished_at",
+        "error_code",
+        "record_count",
+        "sheet_count",
+    }
+    assert not {
+        "business_id",
+        "source_storage_version_id",
+        "source_etag",
+        "lease_token",
+        "lease_expires_at",
+        "dispatch_attempt_count",
+        "result_storage_bucket",
+        "normalized_storage_key",
+        "profile_storage_key",
+    } & set(processing_job_properties)
