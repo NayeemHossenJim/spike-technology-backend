@@ -369,6 +369,20 @@ class CheckoutService:
             raise BillingPlanNotCheckoutEligibleError
         return plan
 
+    async def _lock_active_user(self, user_id: UUID) -> User:
+        result = await self.session.execute(
+            select(User).where(User.id == user_id).with_for_update()
+        )
+        user = result.scalar_one_or_none()
+        if (
+            user is None
+            or not user.is_active
+            or not user.is_verified
+            or user.deleted_at is not None
+        ):
+            raise BillingCheckoutConflictError
+        return user
+
     async def _expire_stale_attempts(self, scope: TenantScope, now: datetime) -> None:
         result = await self.session.execute(
             scope.select(
@@ -572,6 +586,7 @@ class CheckoutService:
             plan=plan,
         )
 
+        locked_user = await self._lock_active_user(user.id)
         digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
         now = utc_now()
         checkout, subscription, customer_id = await self._prepare_attempt(
@@ -589,7 +604,7 @@ class CheckoutService:
             subscription=subscription,
             plan_code=plan_code,
             price_id=price_id,
-            customer_email=user.email,
+            customer_email=locked_user.email,
             stripe_customer_id=customer_id,
             now=now,
         )

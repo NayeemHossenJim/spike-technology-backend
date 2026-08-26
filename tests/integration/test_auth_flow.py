@@ -275,6 +275,7 @@ async def test_password_reset_uses_verified_otp_and_revokes_refresh_tokens(
         json={"email": "reset@example.com", "password": "CorrectHorseBattery9"},
     )
     assert login.status_code == 200
+    previous_access_token = login.json()["access_token"]
     refresh_token = client.cookies.get(REFRESH_COOKIE_NAME)
     assert refresh_token
 
@@ -328,6 +329,12 @@ async def test_password_reset_uses_verified_otp_and_revokes_refresh_tokens(
 
     previous_session = await client.post("/api/v1/auth/refresh")
     assert previous_session.status_code == 401
+
+    previous_access = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer {previous_access_token}"},
+    )
+    assert previous_access.status_code == 401
 
     new_login = await client.post(
         "/api/v1/auth/login",

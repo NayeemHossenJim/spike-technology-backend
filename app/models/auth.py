@@ -60,3 +60,20 @@ class PasswordResetOTP(UUIDPrimaryKey, TimestampedModel, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
+
+
+class EmailChangeOTP(UUIDPrimaryKey, TimestampedModel, table=True):
+    __tablename__ = "email_change_tokens"
+
+    user_id: UUID = Field(foreign_key="users.id", index=True)
+    new_email: str = Field(sa_column=Column(String(320), nullable=False))
+    otp_hash: str = Field(sa_column=Column(String(512), nullable=False, unique=True))
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    attempt_count: int = Field(
+        default=0,
+        sa_column=Column(Integer, nullable=False, server_default="0"),
+    )
+    used_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )

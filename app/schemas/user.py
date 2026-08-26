@@ -1,7 +1,17 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from typing import Literal
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from app.core.password_policy import validate_password_strength
 from app.models.user import (
     PROFILE_BIO_MAX_LENGTH,
     PROFILE_LOCATION_MAX_LENGTH,
@@ -88,3 +98,42 @@ class UserProfileUpdate(BaseModel):
         if not self.model_fields_set:
             raise ValueError("At least one profile field must be updated.")
         return self
+
+
+class UserSecurityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class UserEmailChangeRequest(UserSecurityRequest):
+    old_email: EmailStr
+    new_email: EmailStr
+    current_password: str = Field(min_length=1, max_length=128)
+
+
+class UserEmailChangeConfirm(UserSecurityRequest):
+    new_email: EmailStr
+    otp: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class UserPasswordChangeRequest(UserSecurityRequest):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=12, max_length=128)
+    confirm_password: str = Field(min_length=12, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password_strength(cls, value: str) -> str:
+        return validate_password_strength(value)
+
+    @model_validator(mode="after")
+    def passwords_must_match(self) -> UserPasswordChangeRequest:
+        if self.new_password != self.confirm_password:
+            raise ValueError("New password and confirmation must match.")
+        if self.new_password == self.current_password:
+            raise ValueError("New password must differ from the current password.")
+        return self
+
+
+class UserAccountDeleteRequest(UserSecurityRequest):
+    current_password: str = Field(min_length=1, max_length=128)
+    confirmation: Literal["DELETE"]

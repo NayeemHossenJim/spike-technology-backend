@@ -17,7 +17,12 @@ from app.models.ai import (
     AIMessageRole,
     AIMessageStatus,
 )
-from app.models.auth import EmailVerificationOTP, PasswordResetOTP, RefreshToken
+from app.models.auth import (
+    EmailChangeOTP,
+    EmailVerificationOTP,
+    PasswordResetOTP,
+    RefreshToken,
+)
 from app.models.billing import (
     BillingCheckoutSession,
     BillingCheckoutStatus,
@@ -100,6 +105,7 @@ __all__ = [
     "DashboardSnapshotSource",
     "DashboardType",
     "EmailVerificationOTP",
+    "EmailChangeOTP",
     "EntitlementKey",
     "EntitlementSource",
     "Industry",

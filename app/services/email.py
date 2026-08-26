@@ -18,6 +18,8 @@ class EmailSender(Protocol):
 
     async def send_password_reset_otp(self, recipient: str, otp: str) -> None: ...
 
+    async def send_email_change_otp(self, recipient: str, otp: str) -> None: ...
+
 
 class ConsoleEmailSender:
     """Development-only sender. It never runs when APP_ENV=production."""
@@ -39,6 +41,14 @@ class ConsoleEmailSender:
             recipient,
             otp,
             self.settings.password_reset_expire_minutes,
+        )
+
+    async def send_email_change_otp(self, recipient: str, otp: str) -> None:
+        logger.info(
+            "Development email-change OTP for %s: %s. Expires in %s minutes.",
+            recipient,
+            otp,
+            self.settings.email_verification_expire_minutes,
         )
 
 
@@ -87,6 +97,19 @@ class SesEmailSender:
                 "This code expires in "
                 f"{self.settings.password_reset_expire_minutes} minutes. "
                 "If you did not request this, you can ignore this email."
+            ),
+        )
+
+    async def send_email_change_otp(self, recipient: str, otp: str) -> None:
+        await self._send(
+            recipient=recipient,
+            subject="Confirm your new Spike Technology email",
+            body=(
+                "Your email-change verification code is: "
+                f"{otp}\n\n"
+                "This code expires in "
+                f"{self.settings.email_verification_expire_minutes} minutes. "
+                "If you did not request this, secure your account immediately."
             ),
         )
 

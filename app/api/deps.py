@@ -15,6 +15,7 @@ from app.db.session import get_session
 from app.models.ai import AIMessage
 from app.models.business import TenantRole
 from app.models.user import User, UserRole
+from app.services.account_security import AccountSecurityService
 from app.services.ai_credits import digest_ai_idempotency_key
 from app.services.auth import AuthService
 from app.services.email import EmailSender, get_email_sender
@@ -37,6 +38,18 @@ def get_auth_service(
     email_sender: Annotated[EmailSender, Depends(get_email_sender)],
 ) -> AuthService:
     return AuthService(session=session, settings=settings, email_sender=email_sender)
+
+
+def get_account_security_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    email_sender: Annotated[EmailSender, Depends(get_email_sender)],
+) -> AccountSecurityService:
+    return AccountSecurityService(
+        session=session,
+        settings=settings,
+        email_sender=email_sender,
+    )
 
 
 async def enforce_auth_rate_limit_dependency(

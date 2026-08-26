@@ -189,9 +189,14 @@ docker compose up --build
 
 ## Local development email
 
-`.env.example` uses `EMAIL_BACKEND=console`. Registration and password-reset **six-digit OTPs** are written to the API log, not sent to a real inbox. This makes local testing safe.
+`.env.example` uses `EMAIL_BACKEND=console`. Registration, password-reset, and
+new-email verification **six-digit OTPs** are written to the API log, not sent to a
+real inbox. This makes local testing safe.
 
-Both OTP flows use the approved policy: a 10-minute expiry, five maximum incorrect attempts, and a 60-second resend cooldown. A resend invalidates the earlier OTP. OTP replacement is serialized per user, so simultaneous resend requests cannot bypass the cooldown and create multiple active codes.
+All OTP flows use the approved policy: a 10-minute expiry, five maximum incorrect
+attempts, and a 60-second resend cooldown. A resend invalidates the earlier OTP. OTP
+replacement is serialized per user, so simultaneous resend requests cannot bypass the
+cooldown and create multiple active codes.
 
 For AWS SES, set the following only after you have verified your sending identity in SES:
 
@@ -332,6 +337,79 @@ dashboard cards and PDF exports cannot show stale industry data.
 Email, password, role, account status, verification status, and session generation
 are deliberately excluded from this endpoint. Those values require separate verified
 security or administrative workflows and cannot be changed through Edit Profile.
+
+### Change email, password, or delete the account
+
+Figma's **Change email & password** settings surface maps to dedicated authenticated
+security routes; these fields never pass through the general profile patch. Request a
+new-email challenge with the current password:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/users/me/email-change \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "old_email":"test@example.com",
+    "new_email":"replacement@example.com",
+    "current_password":"CorrectHorseBattery9"
+  }'
+```
+
+The old address must equal the authenticated account, the new address must be unused,
+and the password must reauthenticate the user. The new address is unchanged until its
+six-digit OTP is confirmed:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/users/me/email-change/confirm \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"new_email":"replacement@example.com","otp":"PASTE_SIX_DIGIT_OTP_HERE"}'
+```
+
+Change the password using Figma's Old Password, Create Password, and Confirm Password
+fields:
+
+```bash
+curl -X PUT http://localhost:8000/api/v1/users/me/password \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "current_password":"CorrectHorseBattery9",
+    "new_password":"DifferentHorseBattery8",
+    "confirm_password":"DifferentHorseBattery8"
+  }'
+```
+
+Both completed credential changes increment the account session generation, revoke all
+refresh tokens, invalidate pending authentication OTPs, and clear the browser refresh
+cookie. Every previously issued access token also becomes invalid immediately, so the
+client must discard it and return to sign-in. Password reset now applies the same access
+token invalidation rule.
+
+Account deletion requires a confirmation dialog that collects the current password and
+the exact word `DELETE`; this confirmation is intentionally stronger than Figma's bare
+Delete Account link:
+
+```bash
+curl -X DELETE http://localhost:8000/api/v1/users/me \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"current_password":"CorrectHorseBattery9","confirmation":"DELETE"}'
+```
+
+Deletion immediately disables the account, revokes every session and OTP, releases the
+old email for a new registration, removes profile identity fields, deactivates the owner
+assignment, and ends a local standalone trial. Tenant, report, billing, invoice, and
+audit records are retained under a non-login anonymized user identity for referential
+and financial integrity. Deletion fails closed while a Checkout Session is pending/open
+or a Stripe-managed subscription is still current; the user must finish/cancel Checkout
+and allow the subscription to end first. The final active super administrator is also
+protected from self-deletion.
+
+Frontend integration must add two security confirmations not present in the supplied
+frame: a current-password field before requesting an email change, and an OTP step for
+the new address. The Delete Account control must open the password plus `DELETE`
+confirmation dialog and render the documented `409` billing/last-admin messages.
 
 Rotate the refresh token and receive a new access token. There is no JSON request body:
 

@@ -47,3 +47,32 @@ async def test_ses_sender_builds_verification_email_without_network_access() -> 
     assert payload["FromEmailAddress"] == "no-reply@example.com"
     assert payload["Destination"] == {"ToAddresses": ["recipient@example.com"]}
     assert "012345" in payload["Content"]["Simple"]["Body"]["Text"]["Data"]
+
+
+@pytest.mark.asyncio
+async def test_console_sender_logs_email_change_otp(caplog: pytest.LogCaptureFixture) -> None:
+    sender = ConsoleEmailSender(make_settings())
+
+    with caplog.at_level(logging.INFO, logger="app.services.email"):
+        await sender.send_email_change_otp("new@example.com", "654321")
+
+    assert "Development email-change OTP for new@example.com: 654321" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_ses_sender_builds_email_change_notice_without_network_access() -> None:
+    settings = make_settings()
+    settings.aws_region = "us-east-1"
+    settings.ses_from_email = "no-reply@example.com"
+    mock_client = MagicMock()
+
+    with patch("app.services.email.boto3.client", return_value=mock_client):
+        sender = SesEmailSender(settings)
+        await sender.send_email_change_otp("new@example.com", "654321")
+
+    payload = mock_client.send_email.call_args.kwargs
+    assert payload["Destination"] == {"ToAddresses": ["new@example.com"]}
+    assert payload["Content"]["Simple"]["Subject"]["Data"] == (
+        "Confirm your new Spike Technology email"
+    )
+    assert "654321" in payload["Content"]["Simple"]["Body"]["Text"]["Data"]

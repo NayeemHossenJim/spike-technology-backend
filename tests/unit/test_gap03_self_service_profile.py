@@ -192,11 +192,11 @@ async def test_profile_service_does_not_touch_business_when_industry_is_omitted(
     session.execute.assert_awaited_once()
 
 
-def test_gap03_openapi_exposes_only_authenticated_profile_mutation() -> None:
+def test_gap03_openapi_keeps_authenticated_profile_mutation_separate() -> None:
     schema = create_app().openapi()
     me_path = schema["paths"]["/api/v1/users/me"]
 
-    assert set(me_path) == {"get", "patch"}
+    assert set(me_path) == {"get", "patch", "delete"}
     request_schema = schema["components"]["schemas"]["UserProfileUpdate"]
     assert list(request_schema["properties"]) == [
         "full_name",

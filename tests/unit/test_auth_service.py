@@ -18,6 +18,9 @@ class NoopEmailSender:
     async def send_password_reset_otp(self, recipient: str, otp: str) -> None:
         raise AssertionError("Password reset is not part of this test")
 
+    async def send_email_change_otp(self, recipient: str, otp: str) -> None:
+        raise AssertionError("Email change is not part of this test")
+
 
 def make_settings() -> Settings:
     return Settings(

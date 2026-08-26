@@ -26,7 +26,12 @@ from app.core.security import (
     verify_password,
     verify_password_against_dummy,
 )
-from app.models.auth import EmailVerificationOTP, PasswordResetOTP, RefreshToken
+from app.models.auth import (
+    EmailChangeOTP,
+    EmailVerificationOTP,
+    PasswordResetOTP,
+    RefreshToken,
+)
 from app.models.user import User
 from app.schemas.auth import (
     AccessTokenResponse,
@@ -414,11 +419,21 @@ class AuthService:
         if not isinstance(reset_otp, PasswordResetOTP) or not reset_otp.verified_at:
             raise TokenValidationError
 
+        now = utc_now()
         user.password_hash = await asyncify(hash_password)(payload.new_password)
-        reset_otp.used_at = utc_now()
+        user.auth_session_version += 1
+        reset_otp.used_at = now
+        await self.session.execute(
+            update(EmailChangeOTP)
+            .where(
+                EmailChangeOTP.user_id == user.id,
+                EmailChangeOTP.used_at.is_(None),
+            )
+            .values(used_at=now)
+        )
         await self.session.execute(
             update(RefreshToken)
             .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
-            .values(revoked_at=utc_now())
+            .values(revoked_at=now)
         )
         await self.session.commit()

@@ -80,12 +80,16 @@ from app.services.processing_dispatch import (  # noqa: E402
 class InMemoryEmailSender:
     verification_otps: list[tuple[str, str]] = field(default_factory=list)
     password_reset_otps: list[tuple[str, str]] = field(default_factory=list)
+    email_change_otps: list[tuple[str, str]] = field(default_factory=list)
 
     async def send_verification_otp(self, recipient: str, otp: str) -> None:
         self.verification_otps.append((recipient, otp))
 
     async def send_password_reset_otp(self, recipient: str, otp: str) -> None:
         self.password_reset_otps.append((recipient, otp))
+
+    async def send_email_change_otp(self, recipient: str, otp: str) -> None:
+        self.email_change_otps.append((recipient, otp))
 
 
 @dataclass
