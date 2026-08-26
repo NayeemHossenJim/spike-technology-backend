@@ -19,7 +19,7 @@ def make_alembic_config() -> Config:
 
 def test_alembic_has_exactly_one_migration_head() -> None:
     heads = ScriptDirectory.from_config(make_alembic_config()).get_heads()
-    assert heads == ["0016_gap02_grounded_dashboards"]
+    assert heads == ["0017_gap03_self_service_profile"]
     assert all(len(head) <= 32 for head in heads)
 
 

@@ -72,9 +72,16 @@ class UserRead(BaseModel):
     id: UUID
     email: EmailStr
     full_name: str
+    username: str | None
+    phone_number: str | None
     role: UserRole
     industry: Industry | None
     job_role: JobRole | None
+    street_address: str | None
+    city: str | None
+    state: str | None
+    postal_code: str | None
+    bio: str | None
     is_active: bool
     is_verified: bool
 

@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.models.user import (
+    PROFILE_BIO_MAX_LENGTH,
+    PROFILE_LOCATION_MAX_LENGTH,
+    PROFILE_PHONE_NUMBER_MAX_LENGTH,
+    PROFILE_POSTAL_CODE_MAX_LENGTH,
+    PROFILE_STREET_ADDRESS_MAX_LENGTH,
+    PROFILE_USERNAME_MAX_LENGTH,
+    Industry,
+    JobRole,
+)
+
+
+class UserProfileUpdate(BaseModel):
+    """Fields editable from Figma's self-service Edit Profile surface.
+
+    Email and authentication/authorization fields are intentionally absent.
+    They require separate verified security workflows.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str | None = Field(default=None, min_length=2, max_length=120)
+    username: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=PROFILE_USERNAME_MAX_LENGTH,
+    )
+    phone_number: str | None = Field(
+        default=None,
+        min_length=7,
+        max_length=PROFILE_PHONE_NUMBER_MAX_LENGTH,
+    )
+    industry: Industry | None = None
+    job_role: JobRole | None = None
+    street_address: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=PROFILE_STREET_ADDRESS_MAX_LENGTH,
+    )
+    city: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=PROFILE_LOCATION_MAX_LENGTH,
+    )
+    state: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=PROFILE_LOCATION_MAX_LENGTH,
+    )
+    postal_code: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=PROFILE_POSTAL_CODE_MAX_LENGTH,
+    )
+    bio: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=PROFILE_BIO_MAX_LENGTH,
+    )
+
+    @field_validator("full_name", mode="before")
+    @classmethod
+    def normalize_full_name(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("Full name cannot be null.")
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator(
+        "username",
+        "phone_number",
+        "street_address",
+        "city",
+        "state",
+        "postal_code",
+        "bio",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def require_change(self) -> UserProfileUpdate:
+        if not self.model_fields_set:
+            raise ValueError("At least one profile field must be updated.")
+        return self

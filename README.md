@@ -299,6 +299,40 @@ curl http://localhost:8000/api/v1/users/me \
   -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
 ```
 
+### Edit the authenticated profile
+
+`GET /api/v1/users/me` returns the persisted text-field contract for Figma's Edit
+Profile screen. Update any subset of the non-sensitive profile fields with
+`PATCH /api/v1/users/me`:
+
+```bash
+curl -X PATCH http://localhost:8000/api/v1/users/me \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "full_name": "Brendoly Cooper",
+    "username": "B. Cooper",
+    "phone_number": "(207) 555-0119",
+    "industry": "Accounting",
+    "job_role": "Accountant",
+    "street_address": "2972 Westheimer Rd.",
+    "city": "Santa Ana",
+    "state": "Illinois",
+    "postal_code": "85486",
+    "bio": "Finance operations lead."
+  }'
+```
+
+All text is trimmed, the bio is limited to the Figma-confirmed 200 characters, and
+unknown fields are rejected. Optional fields can be cleared explicitly with JSON
+`null`; omitted fields are preserved. If the user already owns a business, updating
+or clearing `industry` updates both profile and business in one transaction so saved
+dashboard cards and PDF exports cannot show stale industry data.
+
+Email, password, role, account status, verification status, and session generation
+are deliberately excluded from this endpoint. Those values require separate verified
+security or administrative workflows and cannot be changed through Edit Profile.
+
 Rotate the refresh token and receive a new access token. There is no JSON request body:
 
 ```bash
