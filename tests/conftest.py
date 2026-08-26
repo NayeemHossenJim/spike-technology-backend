@@ -109,6 +109,7 @@ class InMemoryReportProcessingDispatcher:
 class InMemoryGeminiGateway:
     calls: list[tuple[str, str | None]] = field(default_factory=list)
     failure: GeminiGatewayError | None = None
+    response_text_override: str | None = None
     block: bool = False
     started: asyncio.Event = field(default_factory=asyncio.Event)
     release: asyncio.Event = field(default_factory=asyncio.Event)
@@ -126,8 +127,21 @@ class InMemoryGeminiGateway:
         if self.failure is not None:
             raise self.failure
         sequence = len(self.calls)
+        if self.response_text_override is not None:
+            response_text = self.response_text_override
+        elif system_instruction is not None and "## Summary" in system_instruction:
+            response_text = (
+                "## Summary\nCalculated dashboard evidence was reviewed.\n\n"
+                "## Opportunity\nValidate the largest mapped period change.\n\n"
+                "## Recommendation\nAssign an owner to review the calculated "
+                "spend concentration.\n\n"
+                "## Disclaimer\nThis result is not an audit or a substitute for "
+                "professional accounting review."
+            )
+        else:
+            response_text = f"Deterministic AI response {sequence}."
         return GeminiGeneration(
-            text=f"Deterministic AI response {sequence}.",
+            text=response_text,
             provider_response_id=f"test-response-{sequence:04d}",
             model_version="gemini-test-model",
             finish_reason="STOP",

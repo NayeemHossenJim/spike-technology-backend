@@ -19,7 +19,8 @@ def make_alembic_config() -> Config:
 
 def test_alembic_has_exactly_one_migration_head() -> None:
     heads = ScriptDirectory.from_config(make_alembic_config()).get_heads()
-    assert heads == ["0015_m7_ai_credit_adjustments"]
+    assert heads == ["0016_gap02_grounded_dashboards"]
+    assert all(len(head) <= 32 for head in heads)
 
 
 def test_alembic_path_separator_uses_current_setting() -> None:

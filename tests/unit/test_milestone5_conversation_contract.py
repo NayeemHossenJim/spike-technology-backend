@@ -9,6 +9,7 @@ from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, UniqueConst
 from app.main import create_app
 from app.models.ai import (
     AIConversation,
+    AIConversationPurpose,
     AIMessage,
     AIMessageRole,
     AIMessageStatus,
@@ -29,6 +30,10 @@ def _index_names(table) -> set[str]:
 
 
 def test_ai_conversation_message_enums_are_stable() -> None:
+    assert [item.value for item in AIConversationPurpose] == [
+        "chat",
+        "dashboard_analysis",
+    ]
     assert [item.value for item in AIMessageRole] == ["user", "assistant"]
     assert [item.value for item in AIMessageStatus] == [
         "pending",
@@ -47,11 +52,14 @@ def test_ai_conversation_schema_contract_is_registered() -> None:
         "created_at",
         "updated_at",
         "created_by_user_id",
+        "purpose",
+        "dashboard_snapshot_id",
         "title",
         "last_message_at",
     } == set(table.columns.keys())
     assert {
         "fk_ai_conversations_business_creator",
+        "fk_ai_conversations_dashboard_snapshot_business",
     } <= _named(table, ForeignKeyConstraint)
     assert {
         "uq_ai_conversations_id_business",
@@ -59,11 +67,15 @@ def test_ai_conversation_schema_contract_is_registered() -> None:
     assert {
         "ck_ai_conversations_title",
         "ck_ai_conversations_last_message",
+        "ck_ai_conversations_purpose",
+        "ck_ai_conversations_analysis_snapshot",
     } <= _named(table, CheckConstraint)
     assert {
         "ix_ai_conversations_business_id",
         "ix_ai_conversations_created_by_user_id",
+        "ix_ai_conversations_dashboard_snapshot_id",
         "ix_ai_conversations_business_updated",
+        "ux_ai_conversations_dashboard_analysis",
     } <= _index_names(table)
 
 

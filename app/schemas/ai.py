@@ -3,11 +3,12 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.ai import (
     AI_CONVERSATION_TITLE_MAX_LENGTH,
     AI_MESSAGE_CONTENT_MAX_LENGTH,
+    AIConversationPurpose,
     AICreditLedgerStatus,
     AIMessageRole,
     AIMessageStatus,
@@ -21,6 +22,8 @@ class AIConversationCreate(BaseModel):
         default=None,
         max_length=AI_CONVERSATION_TITLE_MAX_LENGTH,
     )
+    purpose: AIConversationPurpose = AIConversationPurpose.CHAT
+    dashboard_snapshot_id: UUID | None = None
 
     @field_validator("title", mode="before")
     @classmethod
@@ -30,6 +33,15 @@ class AIConversationCreate(BaseModel):
         normalized = value.strip()
         return normalized or None
 
+    @model_validator(mode="after")
+    def require_analysis_snapshot(self) -> AIConversationCreate:
+        if (
+            self.purpose is AIConversationPurpose.DASHBOARD_ANALYSIS
+            and self.dashboard_snapshot_id is None
+        ):
+            raise ValueError("Dashboard analysis requires a dashboard snapshot.")
+        return self
+
 
 class AIConversationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -37,6 +49,8 @@ class AIConversationRead(BaseModel):
     id: UUID
     business_id: UUID
     created_by_user_id: UUID
+    purpose: AIConversationPurpose
+    dashboard_snapshot_id: UUID | None
     title: str | None
     last_message_at: datetime | None
     created_at: datetime

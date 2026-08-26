@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlmodel import Field
 
@@ -48,6 +49,11 @@ class AIMessageStatus(StrEnum):
     PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class AIConversationPurpose(StrEnum):
+    CHAT = "chat"
+    DASHBOARD_ANALYSIS = "dashboard_analysis"
 
 
 class AICreditAccount(
@@ -374,6 +380,12 @@ class AIConversation(
             ondelete="CASCADE",
             name="fk_ai_conversations_business_creator",
         ),
+        ForeignKeyConstraint(
+            ["dashboard_snapshot_id", "business_id"],
+            ["dashboard_snapshots.id", "dashboard_snapshots.business_id"],
+            ondelete="CASCADE",
+            name="fk_ai_conversations_dashboard_snapshot_business",
+        ),
         UniqueConstraint(
             "id",
             "business_id",
@@ -387,15 +399,43 @@ class AIConversation(
             "last_message_at IS NULL OR last_message_at >= created_at",
             name="ck_ai_conversations_last_message",
         ),
+        CheckConstraint(
+            "purpose IN ('chat', 'dashboard_analysis')",
+            name="ck_ai_conversations_purpose",
+        ),
+        CheckConstraint(
+            "purpose <> 'dashboard_analysis' OR dashboard_snapshot_id IS NOT NULL",
+            name="ck_ai_conversations_analysis_snapshot",
+        ),
         Index(
             "ix_ai_conversations_business_updated",
             "business_id",
             "updated_at",
             "id",
         ),
+        Index(
+            "ux_ai_conversations_dashboard_analysis",
+            "business_id",
+            "dashboard_snapshot_id",
+            unique=True,
+            postgresql_where=text("purpose = 'dashboard_analysis'"),
+        ),
     )
 
     created_by_user_id: UUID = Field(nullable=False, index=True)
+    purpose: AIConversationPurpose = Field(
+        default=AIConversationPurpose.CHAT,
+        sa_column=Column(
+            String(32),
+            nullable=False,
+            default=AIConversationPurpose.CHAT,
+        ),
+    )
+    dashboard_snapshot_id: UUID | None = Field(
+        default=None,
+        nullable=True,
+        index=True,
+    )
     title: str | None = Field(
         default=None,
         sa_column=Column(String(AI_CONVERSATION_TITLE_MAX_LENGTH), nullable=True),

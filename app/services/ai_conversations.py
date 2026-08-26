@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import func, select
@@ -12,12 +13,15 @@ from app.models.ai import (
     AI_CONVERSATION_TITLE_MAX_LENGTH,
     AI_MESSAGE_CONTENT_MAX_LENGTH,
     AIConversation,
+    AIConversationPurpose,
     AIMessage,
     AIMessageRole,
     AIMessageStatus,
 )
 from app.models.base import utc_now
+from app.models.dashboard import DashboardSnapshot
 from app.models.user import User
+from app.schemas.dashboard import DashboardSnapshotPayloadRead
 from app.services.ai_credits import digest_ai_idempotency_key
 from app.services.tenant import TenantScope
 
@@ -31,6 +35,14 @@ class AIConversationNotFoundError(AIConversationError):
 
 
 class AIConversationIntegrityError(AIConversationError):
+    pass
+
+
+class AIConversationSourceNotFoundError(AIConversationError):
+    pass
+
+
+class AIConversationSourceNotReadyError(AIConversationError):
     pass
 
 
@@ -69,6 +81,13 @@ class AIMessageSubmission:
     replayed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class DashboardAnalysisState:
+    conversation: AIConversation
+    user_message: AIMessage | None
+    assistant_message: AIMessage | None
+
+
 def normalize_ai_conversation_title(title: str | None) -> str | None:
     if title is None:
         return None
@@ -91,17 +110,47 @@ class AIConversationService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    @staticmethod
+    def _validate_analysis_snapshot(snapshot: DashboardSnapshot) -> None:
+        try:
+            payload = DashboardSnapshotPayloadRead.model_validate(snapshot.payload)
+        except ValidationError as exc:
+            raise AIConversationSourceNotReadyError from exc
+        if payload.insight is None:
+            raise AIConversationSourceNotReadyError
+
     async def create(
         self,
         scope: TenantScope,
         *,
         user: User,
         title: str | None = None,
+        purpose: AIConversationPurpose = AIConversationPurpose.CHAT,
+        dashboard_snapshot_id: UUID | None = None,
     ) -> AIConversation:
+        normalized_purpose = AIConversationPurpose(purpose)
+        if (
+            normalized_purpose is AIConversationPurpose.DASHBOARD_ANALYSIS
+            and dashboard_snapshot_id is None
+        ):
+            raise AIConversationSourceNotFoundError
+        if dashboard_snapshot_id is not None:
+            snapshot = await scope.get(
+                self.session,
+                DashboardSnapshot,
+                dashboard_snapshot_id,
+            )
+            if snapshot is None:
+                raise AIConversationSourceNotFoundError
+            if normalized_purpose is AIConversationPurpose.DASHBOARD_ANALYSIS:
+                self._validate_analysis_snapshot(snapshot)
+
         conversation = AIConversation(
             business_id=scope.business_id,
             created_by_user_id=user.id,
             title=normalize_ai_conversation_title(title),
+            purpose=normalized_purpose,
+            dashboard_snapshot_id=dashboard_snapshot_id,
         )
         self.session.add(conversation)
         try:
@@ -120,6 +169,108 @@ class AIConversationService:
         if conversation is None:
             raise AIConversationNotFoundError
         return conversation
+
+    async def _dashboard_analysis_conversation(
+        self,
+        scope: TenantScope,
+        snapshot_id: UUID,
+    ) -> AIConversation | None:
+        result = await self.session.execute(
+            scope.select(
+                AIConversation,
+                AIConversation.dashboard_snapshot_id == snapshot_id,
+                AIConversation.purpose == AIConversationPurpose.DASHBOARD_ANALYSIS,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_or_create_dashboard_analysis(
+        self,
+        scope: TenantScope,
+        *,
+        user: User,
+        snapshot_id: UUID,
+        title: str,
+    ) -> AIConversation:
+        snapshot = await scope.get(
+            self.session,
+            DashboardSnapshot,
+            snapshot_id,
+        )
+        if snapshot is None:
+            raise AIConversationSourceNotFoundError
+        self._validate_analysis_snapshot(snapshot)
+
+        existing = await self._dashboard_analysis_conversation(
+            scope,
+            snapshot_id,
+        )
+        if existing is not None:
+            await self.session.commit()
+            return existing
+
+        conversation = AIConversation(
+            business_id=scope.business_id,
+            created_by_user_id=user.id,
+            title=normalize_ai_conversation_title(title),
+            purpose=AIConversationPurpose.DASHBOARD_ANALYSIS,
+            dashboard_snapshot_id=snapshot_id,
+        )
+        self.session.add(conversation)
+        try:
+            await self.session.commit()
+            return conversation
+        except IntegrityError as exc:
+            await self.session.rollback()
+            duplicate = await self._dashboard_analysis_conversation(
+                scope,
+                snapshot_id,
+            )
+            if duplicate is None:
+                raise AIConversationIntegrityError from exc
+            await self.session.commit()
+            return duplicate
+
+    async def dashboard_analysis_state(
+        self,
+        scope: TenantScope,
+        *,
+        snapshot_id: UUID,
+    ) -> DashboardAnalysisState | None:
+        conversation = await self._dashboard_analysis_conversation(
+            scope,
+            snapshot_id,
+        )
+        if conversation is None:
+            return None
+
+        result = await self.session.execute(
+            scope.select(
+                AIMessage,
+                AIMessage.conversation_id == conversation.id,
+                AIMessage.role == AIMessageRole.USER,
+            )
+            .order_by(AIMessage.created_at.desc(), AIMessage.id.desc())
+            .limit(1)
+        )
+        user_message = result.scalar_one_or_none()
+        assistant_message: AIMessage | None = None
+        if user_message is not None:
+            assistant_result = await self.session.execute(
+                scope.select(
+                    AIMessage,
+                    AIMessage.conversation_id == conversation.id,
+                    AIMessage.reply_to_message_id == user_message.id,
+                    AIMessage.role == AIMessageRole.ASSISTANT,
+                )
+            )
+            assistant_message = assistant_result.scalar_one_or_none()
+
+        return DashboardAnalysisState(
+            conversation=conversation,
+            user_message=user_message,
+            assistant_message=assistant_message,
+        )
 
     async def list(
         self,

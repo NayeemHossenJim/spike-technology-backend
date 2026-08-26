@@ -12,6 +12,7 @@ from io import BytesIO
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -24,8 +25,18 @@ from app.models.dashboard import (
     DashboardType,
 )
 from app.models.processing import ReportProcessingJob, ReportProcessingStatus
+from app.schemas.dashboard import (
+    DashboardInsightConfiguration,
+    validate_insight_configuration_for_type,
+)
+from app.services.dashboard_insights import (
+    DASHBOARD_INSIGHT_DECIMAL_PRECISION,
+    DashboardInsightAccumulator,
+    DashboardInsightDataError,
+)
 from app.services.report_parser import (
     REPORT_ARTIFACT_FORMAT_VERSION,
+    REPORT_MAX_NORMALIZED_COMPRESSED_BYTES,
     REPORT_MAX_NORMALIZED_UNCOMPRESSED_BYTES,
     REPORT_MAX_PROFILE_BYTES,
 )
@@ -43,6 +54,9 @@ DASHBOARD_MAX_NORMALIZED_LINE_BYTES = 16 * 1024 * 1024
 
 _STRICT_DECIMAL_TEXT = re.compile(r"^[+-]?(?:\d{1,40})(?:\.\d{1,20})?$")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
+_PROFILE_VALUE_TYPES = frozenset(
+    {"null", "boolean", "integer", "number", "date", "datetime", "time", "string"}
+)
 
 
 class DashboardSnapshotNotFoundError(Exception):
@@ -54,6 +68,10 @@ class DashboardSnapshotSourceNotFoundError(Exception):
 
 
 class DashboardSnapshotSourceNotReadyError(Exception):
+    pass
+
+
+class DashboardSnapshotSourceMismatchError(Exception):
     pass
 
 
@@ -84,6 +102,16 @@ class DashboardSnapshotPage:
     offset: int
 
 
+@dataclass(frozen=True, slots=True)
+class DashboardSourceSchema:
+    processing_job_id: UUID
+    report_upload_id: UUID
+    filename: str
+    record_count: int
+    sheet_count: int
+    sheets: tuple[dict[str, Any], ...]
+
+
 @dataclass(slots=True)
 class _NumericAccumulator:
     count: int = 0
@@ -93,7 +121,9 @@ class _NumericAccumulator:
 
     def observe(self, value: Decimal) -> None:
         self.count += 1
-        self.total += value
+        with localcontext() as context:
+            context.prec = DASHBOARD_INSIGHT_DECIMAL_PRECISION
+            self.total += value
         self.minimum = value if self.minimum is None else min(self.minimum, value)
         self.maximum = value if self.maximum is None else max(self.maximum, value)
 
@@ -143,12 +173,18 @@ def dashboard_snapshot_content_hash(payload: dict[str, Any]) -> str:
     return sha256(_canonical_json_bytes(payload)).hexdigest()
 
 
+def validate_dashboard_snapshot_content(snapshot: DashboardSnapshot) -> None:
+    if not isinstance(snapshot.payload, dict):
+        raise DashboardSnapshotArtifactError
+    if dashboard_snapshot_content_hash(snapshot.payload) != snapshot.content_hash:
+        raise DashboardSnapshotArtifactError
+
+
 def _decimal_text(value: Decimal) -> str:
     if value == 0:
         return "0"
 
-    normalized = value.normalize()
-    rendered = format(normalized, "f")
+    rendered = format(value, "f")
 
     if "." in rendered:
         rendered = rendered.rstrip("0").rstrip(".")
@@ -192,7 +228,7 @@ def _render_numeric(
         return None
 
     with localcontext() as context:
-        context.prec = 50
+        context.prec = DASHBOARD_INSIGHT_DECIMAL_PRECISION
         average = accumulator.total / Decimal(accumulator.count)
 
     assert accumulator.minimum is not None
@@ -248,6 +284,7 @@ def _validate_completed_job(job: ReportProcessingJob) -> None:
     if (
         job.normalized_size_bytes is None
         or job.normalized_size_bytes <= 0
+        or job.normalized_size_bytes > REPORT_MAX_NORMALIZED_COMPRESSED_BYTES
         or job.record_count is None
         or job.record_count < 0
         or job.sheet_count is None
@@ -289,17 +326,46 @@ def _profile_sheet_contract(
 
         names: list[str] = []
 
-        for column in columns:
+        for column_position, column in enumerate(columns):
             if not isinstance(column, dict):
                 raise DashboardSnapshotArtifactError
 
             name = column.get("name")
-            if not isinstance(name, str) or not name:
+            source_name = column.get("source_name")
+            generated = column.get("generated")
+            column_index = column.get("index")
+            null_count = column.get("null_count")
+            non_null_count = column.get("non_null_count")
+            type_counts = column.get("type_counts")
+            if (
+                not isinstance(name, str)
+                or not name
+                or isinstance(column_index, bool)
+                or column_index != column_position
+                or not isinstance(generated, bool)
+                or (generated and source_name is not None)
+                or (not generated and (not isinstance(source_name, str) or not source_name))
+                or isinstance(null_count, bool)
+                or not isinstance(null_count, int)
+                or null_count < 0
+                or isinstance(non_null_count, bool)
+                or not isinstance(non_null_count, int)
+                or non_null_count < 0
+                or null_count + non_null_count != record_count
+                or not isinstance(type_counts, dict)
+                or not set(type_counts) <= _PROFILE_VALUE_TYPES
+                or any(
+                    not isinstance(value, int) or isinstance(value, bool) or value <= 0
+                    for value in type_counts.values()
+                )
+                or sum(type_counts.values()) != record_count
+                or type_counts.get("null", 0) != null_count
+            ):
                 raise DashboardSnapshotArtifactError
             names.append(name)
 
         key = (sheet_index, sheet_name)
-        if key in result or len(set(names)) != len(names):
+        if key in result or len({name.casefold() for name in names}) != len(names):
             raise DashboardSnapshotArtifactError
 
         result[key] = tuple(names)
@@ -323,10 +389,14 @@ def _validate_profile(
     if not isinstance(profile, dict):
         raise DashboardSnapshotArtifactError
 
+    source = profile.get("source")
     normalized = profile.get("normalized")
-    if not isinstance(normalized, dict):
+    if not isinstance(source, dict) or not isinstance(normalized, dict):
         raise DashboardSnapshotArtifactError
 
+    source_filename = source.get("filename")
+    source_extension = source.get("extension")
+    source_content_type = source.get("content_type")
     normalized_sha256 = normalized.get("sha256")
 
     if (
@@ -334,6 +404,13 @@ def _validate_profile(
         or profile.get("version") != REPORT_ARTIFACT_FORMAT_VERSION
         or profile.get("job_id") != str(job.id)
         or profile.get("business_id") != str(job.business_id)
+        or source.get("report_upload_id") != str(job.report_upload_id)
+        or not isinstance(source_filename, str)
+        or not source_filename.strip()
+        or not isinstance(source_extension, str)
+        or source_extension not in {"csv", "xlsx", "xls"}
+        or not isinstance(source_content_type, str)
+        or not source_content_type.strip()
         or profile.get("record_count") != job.record_count
         or profile.get("sheet_count") != job.sheet_count
         or normalized.get("format") != "jsonl"
@@ -345,7 +422,10 @@ def _validate_profile(
 
     sheet_contract = _profile_sheet_contract(profile)
 
-    if len(sheet_contract) != job.sheet_count:
+    if (
+        len(sheet_contract) != job.sheet_count
+        or sum(int(sheet["record_count"]) for sheet in profile["sheets"]) != job.record_count
+    ):
         raise DashboardSnapshotArtifactError
 
     return profile
@@ -356,6 +436,7 @@ def _aggregate_normalized(
     job: ReportProcessingJob,
     profile: dict[str, Any],
     compressed_content: bytes,
+    insight: DashboardInsightAccumulator | None = None,
 ) -> dict[str, Any]:
     if job.normalized_size_bytes is None or len(compressed_content) != job.normalized_size_bytes:
         raise DashboardSnapshotArtifactError
@@ -432,6 +513,14 @@ def _aggregate_normalized(
 
                 for column_name in expected_columns:
                     accumulators[key][column_name].observe(values[column_name])
+
+                if insight is not None:
+                    insight.observe(
+                        processing_job_id=job.id,
+                        sheet_index=sheet_index,
+                        sheet_name=sheet_name,
+                        values=values,
+                    )
     except (gzip.BadGzipFile, EOFError, OSError) as exc:
         raise DashboardSnapshotArtifactError from exc
 
@@ -486,6 +575,7 @@ async def _read_source_artifact(
     *,
     storage: S3UploadGateway,
     job: ReportProcessingJob,
+    insight: DashboardInsightAccumulator | None = None,
 ) -> _SourceArtifact:
     _validate_completed_job(job)
 
@@ -521,18 +611,138 @@ async def _read_source_artifact(
     except S3StorageError as exc:
         raise DashboardSnapshotStorageError from exc
 
-    profile = _validate_profile(job, profile_content)
-    aggregate = _aggregate_normalized(
-        job=job,
-        profile=profile,
-        compressed_content=normalized_content,
-    )
+    try:
+        profile = _validate_profile(job, profile_content)
+        if insight is not None:
+            insight.validate_profile(
+                processing_job_id=job.id,
+                profile=profile,
+            )
+        aggregate = _aggregate_normalized(
+            job=job,
+            profile=profile,
+            compressed_content=normalized_content,
+            insight=insight,
+        )
+    except DashboardInsightDataError as exc:
+        raise DashboardSnapshotArtifactError from exc
 
     return _SourceArtifact(
         job=job,
         profile=profile,
         aggregate=aggregate,
     )
+
+
+class DashboardSourceSchemaService:
+    """Tenant-safe public header options for Figma's mapping step."""
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        storage: S3UploadGateway | None = None,
+    ) -> None:
+        self.session = session
+        self.storage = storage
+
+    async def get(
+        self,
+        scope: TenantScope,
+        processing_job_id: UUID,
+    ) -> DashboardSourceSchema:
+        if self.storage is None:
+            raise DashboardSnapshotStorageError
+
+        job = await scope.get(
+            self.session,
+            ReportProcessingJob,
+            processing_job_id,
+        )
+        if job is None:
+            raise DashboardSnapshotSourceNotFoundError
+
+        _validate_completed_job(job)
+        captured_signature = _job_signature(job)
+        bucket = _required_job_string(job, "result_storage_bucket")
+        profile_key = _required_job_string(job, "profile_storage_key")
+        profile_version = _required_job_string(
+            job,
+            "profile_storage_version_id",
+        )
+
+        # Do not keep a database transaction open while reading immutable S3 data.
+        await self.session.commit()
+
+        try:
+            content = await self.storage.read_object(
+                bucket=bucket,
+                key=profile_key,
+                version_id=profile_version,
+                max_bytes=REPORT_MAX_PROFILE_BYTES,
+            )
+        except S3ObjectNotFoundError as exc:
+            raise DashboardSnapshotArtifactError from exc
+        except S3StorageError as exc:
+            raise DashboardSnapshotStorageError from exc
+
+        profile = _validate_profile(job, content)
+        profile_source = profile.get("source")
+        sheets = profile.get("sheets")
+        if not isinstance(profile_source, dict) or not isinstance(sheets, list):
+            raise DashboardSnapshotArtifactError
+        filename = profile_source.get("filename")
+        if not isinstance(filename, str) or not filename:
+            raise DashboardSnapshotArtifactError
+
+        current_result = await self.session.execute(
+            scope.select(
+                ReportProcessingJob,
+                ReportProcessingJob.id == processing_job_id,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        current = current_result.scalar_one_or_none()
+        if current is None or _job_signature(current) != captured_signature:
+            await self.session.rollback()
+            raise DashboardSnapshotConflictError
+        await self.session.commit()
+
+        public_sheets: list[dict[str, Any]] = []
+        for sheet in sheets:
+            assert isinstance(sheet, dict)
+            columns = sheet["columns"]
+            assert isinstance(columns, list)
+            public_sheets.append(
+                {
+                    "sheet_index": sheet["index"],
+                    "sheet_name": sheet["name"],
+                    "record_count": sheet["record_count"],
+                    "columns": [
+                        {
+                            "name": column["name"],
+                            "source_name": column["source_name"],
+                            "generated": column["generated"],
+                            "null_count": column["null_count"],
+                            "non_null_count": column["non_null_count"],
+                            "type_counts": column["type_counts"],
+                        }
+                        for column in columns
+                    ],
+                }
+            )
+
+        assert job.record_count is not None
+        assert job.sheet_count is not None
+        return DashboardSourceSchema(
+            processing_job_id=job.id,
+            report_upload_id=job.report_upload_id,
+            filename=filename,
+            record_count=job.record_count,
+            sheet_count=job.sheet_count,
+            sheets=tuple(public_sheets),
+        )
 
 
 def _source_payload(source: _SourceArtifact) -> dict[str, Any]:
@@ -572,22 +782,30 @@ def build_dashboard_snapshot_payload(
     dashboard_type: DashboardType,
     title: str,
     configuration: dict[str, object],
+    insight_configuration: dict[str, object] | None,
+    insight: dict[str, object] | None,
     sources: tuple[_SourceArtifact, ...],
 ) -> dict[str, Any]:
+    dashboard_payload: dict[str, Any] = {
+        "id": str(dashboard_id),
+        "type": DashboardType(dashboard_type).value,
+        "title": title,
+        "configuration": copy.deepcopy(configuration),
+    }
+    if insight_configuration is not None:
+        dashboard_payload["insight_configuration"] = copy.deepcopy(insight_configuration)
+
     payload: dict[str, Any] = {
         "format": DASHBOARD_SNAPSHOT_FORMAT,
         "schema_version": DASHBOARD_SNAPSHOT_SCHEMA_VERSION,
-        "dashboard": {
-            "id": str(dashboard_id),
-            "type": DashboardType(dashboard_type).value,
-            "title": title,
-            "configuration": copy.deepcopy(configuration),
-        },
+        "dashboard": dashboard_payload,
         "source_count": len(sources),
         "record_count": sum(int(source.job.record_count or 0) for source in sources),
         "sheet_count": sum(int(source.job.sheet_count or 0) for source in sources),
         "sources": [_source_payload(source) for source in sources],
     }
+    if insight is not None:
+        payload["insight"] = copy.deepcopy(insight)
 
     if len(_canonical_json_bytes(payload)) > DASHBOARD_MAX_SNAPSHOT_PAYLOAD_BYTES:
         raise DashboardSnapshotArtifactError
@@ -600,7 +818,7 @@ class DashboardSnapshotService:
         self,
         session: AsyncSession,
         *,
-        storage: S3UploadGateway,
+        storage: S3UploadGateway | None = None,
     ) -> None:
         self.session = session
         self.storage = storage
@@ -623,13 +841,19 @@ class DashboardSnapshotService:
         self,
         scope: TenantScope,
         source_ids: tuple[UUID, ...],
+        *,
+        refresh: bool = False,
+        lock: bool = False,
     ) -> tuple[ReportProcessingJob, ...]:
-        result = await self.session.execute(
-            scope.select(
-                ReportProcessingJob,
-                ReportProcessingJob.id.in_(source_ids),
-            )
+        statement = scope.select(
+            ReportProcessingJob,
+            ReportProcessingJob.id.in_(source_ids),
         )
+        if refresh:
+            statement = statement.execution_options(populate_existing=True)
+        if lock:
+            statement = statement.with_for_update()
+        result = await self.session.execute(statement)
         jobs = tuple(result.scalars().all())
 
         if len(jobs) != len(source_ids):
@@ -661,6 +885,8 @@ class DashboardSnapshotService:
             or len(set(source_processing_job_ids)) != len(source_processing_job_ids)
         ):
             raise ValueError("Dashboard snapshot sources are invalid.")
+        if self.storage is None:
+            raise DashboardSnapshotStorageError
 
         # Stable ordering makes the same logical source set deterministic even
         # when callers submit the IDs in a different order.
@@ -678,9 +904,31 @@ class DashboardSnapshotService:
             DashboardType(dashboard.dashboard_type),
             dashboard.title,
             copy.deepcopy(dashboard.configuration),
+            copy.deepcopy(dashboard.insight_configuration),
             dashboard.updated_at,
         )
         captured_signatures = {job.id: _job_signature(job) for job in jobs}
+
+        insight_configuration: DashboardInsightConfiguration | None = None
+        insight_accumulator: DashboardInsightAccumulator | None = None
+        if dashboard.insight_configuration is not None:
+            try:
+                insight_configuration = DashboardInsightConfiguration.model_validate(
+                    dashboard.insight_configuration
+                )
+                validate_insight_configuration_for_type(
+                    DashboardType(dashboard.dashboard_type),
+                    insight_configuration,
+                )
+            except (ValidationError, ValueError) as exc:
+                raise DashboardSnapshotArtifactError from exc
+
+            insight_accumulator = DashboardInsightAccumulator(
+                dashboard_type=DashboardType(dashboard.dashboard_type),
+                configuration=insight_configuration,
+            )
+            if insight_accumulator.mapped_processing_job_ids != set(source_ids):
+                raise DashboardSnapshotSourceMismatchError
 
         # Close the read transaction before potentially large S3 reads.
         await self.session.commit()
@@ -691,16 +939,32 @@ class DashboardSnapshotService:
                 await _read_source_artifact(
                     storage=self.storage,
                     job=job,
+                    insight=insight_accumulator,
                 )
             )
 
-        dashboard_type, title, configuration, dashboard_updated_at = captured_dashboard
+        (
+            dashboard_type,
+            title,
+            configuration,
+            captured_insight_configuration,
+            dashboard_updated_at,
+        ) = captured_dashboard
+
+        try:
+            insight_payload = (
+                insight_accumulator.render() if insight_accumulator is not None else None
+            )
+        except DashboardInsightDataError as exc:
+            raise DashboardSnapshotArtifactError from exc
 
         payload = build_dashboard_snapshot_payload(
             dashboard_id=dashboard_id,
             dashboard_type=dashboard_type,
             title=title,
             configuration=configuration,
+            insight_configuration=captured_insight_configuration,
+            insight=insight_payload,
             sources=tuple(artifacts),
         )
         content_hash = dashboard_snapshot_content_hash(payload)
@@ -709,7 +973,9 @@ class DashboardSnapshotService:
             scope.select(
                 Dashboard,
                 Dashboard.id == dashboard_id,
-            ).with_for_update()
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
         )
         locked_dashboard = locked_result.scalar_one_or_none()
 
@@ -722,11 +988,17 @@ class DashboardSnapshotService:
             or DashboardType(locked_dashboard.dashboard_type) is not dashboard_type
             or locked_dashboard.title != title
             or locked_dashboard.configuration != configuration
+            or locked_dashboard.insight_configuration != captured_insight_configuration
         ):
             await self.session.rollback()
             raise DashboardSnapshotConflictError
 
-        current_jobs = await self._source_jobs(scope, source_ids)
+        current_jobs = await self._source_jobs(
+            scope,
+            source_ids,
+            refresh=True,
+            lock=True,
+        )
 
         if any(captured_signatures[job.id] != _job_signature(job) for job in current_jobs):
             await self.session.rollback()
@@ -742,6 +1014,8 @@ class DashboardSnapshotService:
         )
         latest = latest_result.scalar_one_or_none()
 
+        if latest is not None:
+            validate_dashboard_snapshot_content(latest)
         if latest is not None and latest.content_hash == content_hash:
             sources = await self._snapshot_sources(
                 scope,
@@ -824,6 +1098,30 @@ class DashboardSnapshotService:
         )
         return tuple(result.scalars().all())
 
+    async def get(
+        self,
+        scope: TenantScope,
+        dashboard_id: UUID,
+        snapshot_id: UUID,
+    ) -> DashboardSnapshotMaterialization:
+        await self._dashboard(scope, dashboard_id)
+        result = await self.session.execute(
+            scope.select(
+                DashboardSnapshot,
+                DashboardSnapshot.id == snapshot_id,
+                DashboardSnapshot.dashboard_id == dashboard_id,
+            )
+        )
+        snapshot = result.scalar_one_or_none()
+        if snapshot is None:
+            raise DashboardSnapshotNotFoundError
+        validate_dashboard_snapshot_content(snapshot)
+        return DashboardSnapshotMaterialization(
+            snapshot=snapshot,
+            sources=await self._snapshot_sources(scope, snapshot.id),
+            replayed=False,
+        )
+
     async def latest(
         self,
         scope: TenantScope,
@@ -843,6 +1141,7 @@ class DashboardSnapshotService:
 
         if snapshot is None:
             raise DashboardSnapshotNotFoundError
+        validate_dashboard_snapshot_content(snapshot)
 
         return DashboardSnapshotMaterialization(
             snapshot=snapshot,
@@ -881,8 +1180,12 @@ class DashboardSnapshotService:
             .limit(limit)
         )
 
+        items = tuple(result.scalars().all())
+        for snapshot in items:
+            validate_dashboard_snapshot_content(snapshot)
+
         return DashboardSnapshotPage(
-            items=tuple(result.scalars().all()),
+            items=items,
             total=total,
             limit=limit,
             offset=offset,
@@ -893,6 +1196,8 @@ __all__ = [
     "DASHBOARD_MAX_SNAPSHOT_PAYLOAD_BYTES",
     "DASHBOARD_MAX_SNAPSHOT_SOURCES",
     "DASHBOARD_SNAPSHOT_FORMAT",
+    "DashboardSourceSchema",
+    "DashboardSourceSchemaService",
     "DashboardSnapshotArtifactError",
     "DashboardSnapshotConflictError",
     "DashboardSnapshotMaterialization",
@@ -900,8 +1205,10 @@ __all__ = [
     "DashboardSnapshotPage",
     "DashboardSnapshotService",
     "DashboardSnapshotSourceNotFoundError",
+    "DashboardSnapshotSourceMismatchError",
     "DashboardSnapshotSourceNotReadyError",
     "DashboardSnapshotStorageError",
     "build_dashboard_snapshot_payload",
     "dashboard_snapshot_content_hash",
+    "validate_dashboard_snapshot_content",
 ]

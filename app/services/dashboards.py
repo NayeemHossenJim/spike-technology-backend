@@ -9,7 +9,11 @@ from sqlmodel import func, select
 
 from app.models.dashboard import Dashboard
 from app.models.subscription import EntitlementKey, Subscription
-from app.schemas.dashboard import DashboardCreate, DashboardUpdate
+from app.schemas.dashboard import (
+    DashboardCreate,
+    DashboardUpdate,
+    validate_insight_configuration_for_type,
+)
 from app.services.subscriptions import (
     CURRENT_SUBSCRIPTION_STATUSES,
     EntitlementDeniedError,
@@ -26,6 +30,10 @@ class DashboardNotFoundError(Exception):
 
 
 class DashboardConflictError(Exception):
+    pass
+
+
+class DashboardInsightConfigurationError(Exception):
     pass
 
 
@@ -103,6 +111,11 @@ class DashboardService:
             dashboard_type=payload.dashboard_type,
             title=payload.title,
             configuration=payload.configuration,
+            insight_configuration=(
+                payload.insight_configuration.model_dump(mode="json")
+                if payload.insight_configuration is not None
+                else None
+            ),
         )
         self.session.add(dashboard)
 
@@ -164,6 +177,17 @@ class DashboardService:
         dashboard = await self.get(scope, dashboard_id)
 
         values = payload.model_dump(exclude_unset=True)
+        insight_configuration = payload.insight_configuration
+        if "insight_configuration" in values:
+            assert insight_configuration is not None
+            try:
+                validate_insight_configuration_for_type(
+                    dashboard.dashboard_type,
+                    insight_configuration,
+                )
+            except ValueError as exc:
+                raise DashboardInsightConfigurationError from exc
+            values["insight_configuration"] = insight_configuration.model_dump(mode="json")
         for field, value in values.items():
             setattr(dashboard, field, value)
 

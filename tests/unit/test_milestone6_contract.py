@@ -99,6 +99,7 @@ def test_dashboard_definition_metadata_enforces_tenant_invariants() -> None:
         "ck_dashboards_type",
         "ck_dashboards_title",
         "ck_dashboards_configuration_object",
+        "ck_dashboards_insight_configuration_object",
     } <= _named(table, CheckConstraint)
     assert {
         "ix_dashboards_business_id",

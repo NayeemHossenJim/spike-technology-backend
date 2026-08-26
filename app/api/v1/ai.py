@@ -20,6 +20,7 @@ from app.api.deps import (
     get_current_user,
     require_tenant_roles,
 )
+from app.api.v1.ai_errors import ai_execution_http_error
 from app.core.config import Settings, get_settings
 from app.db.session import get_session
 from app.models.business import TenantRole
@@ -40,13 +41,14 @@ from app.services.ai_conversations import (
     AIConversationIntegrityError,
     AIConversationNotFoundError,
     AIConversationService,
+    AIConversationSourceNotFoundError,
+    AIConversationSourceNotReadyError,
     AIConversationTitleError,
     AIMessageContentError,
     AIMessageIdempotencyConflictError,
 )
 from app.services.ai_credits import AICreditService, AICreditUsageSummary
 from app.services.ai_execution import (
-    AIExecutionErrorCode,
     AIExecutionFailedError,
     AIExecutionIntegrityError,
     AIExecutionService,
@@ -60,61 +62,6 @@ from app.services.subscriptions import (
 from app.services.tenant import TenantContext
 
 router = APIRouter(prefix="/ai", tags=["AI"])
-
-AI_FAILURE_RESPONSES: dict[AIExecutionErrorCode, tuple[int, str]] = {
-    AIExecutionErrorCode.SUBSCRIPTION_REQUIRED: (
-        status.HTTP_402_PAYMENT_REQUIRED,
-        "An active subscription is required to use AI.",
-    ),
-    AIExecutionErrorCode.SUBSCRIPTION_INACTIVE: (
-        status.HTTP_402_PAYMENT_REQUIRED,
-        "The current subscription cannot use AI.",
-    ),
-    AIExecutionErrorCode.ENTITLEMENT_DENIED: (
-        status.HTTP_403_FORBIDDEN,
-        "AI access is not enabled for the current subscription.",
-    ),
-    AIExecutionErrorCode.CREDIT_LIMIT_REACHED: (
-        status.HTTP_429_TOO_MANY_REQUESTS,
-        "The AI response limit has been reached for the current period.",
-    ),
-    AIExecutionErrorCode.PROVIDER_REJECTED: (
-        status.HTTP_422_UNPROCESSABLE_CONTENT,
-        "The AI provider rejected this request.",
-    ),
-    AIExecutionErrorCode.PROVIDER_BLOCKED: (
-        status.HTTP_422_UNPROCESSABLE_CONTENT,
-        "The AI provider blocked this request.",
-    ),
-    AIExecutionErrorCode.PROVIDER_INCOMPLETE: (
-        status.HTTP_502_BAD_GATEWAY,
-        "The AI provider returned an incomplete response.",
-    ),
-    AIExecutionErrorCode.PROVIDER_INVALID: (
-        status.HTTP_502_BAD_GATEWAY,
-        "The AI provider returned an invalid response.",
-    ),
-    AIExecutionErrorCode.RESPONSE_TOO_LARGE: (
-        status.HTTP_502_BAD_GATEWAY,
-        "The AI provider returned a response that was too large.",
-    ),
-    AIExecutionErrorCode.PROVIDER_CONFIGURATION: (
-        status.HTTP_503_SERVICE_UNAVAILABLE,
-        "AI service is temporarily unavailable.",
-    ),
-    AIExecutionErrorCode.PROVIDER_TEMPORARY: (
-        status.HTTP_503_SERVICE_UNAVAILABLE,
-        "AI service is temporarily unavailable.",
-    ),
-    AIExecutionErrorCode.PERSISTENCE_FAILURE: (
-        status.HTTP_503_SERVICE_UNAVAILABLE,
-        "AI service could not persist the response.",
-    ),
-    AIExecutionErrorCode.EXECUTION_INTEGRITY: (
-        status.HTTP_503_SERVICE_UNAVAILABLE,
-        "AI service is temporarily unavailable.",
-    ),
-}
 
 
 def _conversation_read(conversation) -> AIConversationRead:
@@ -141,11 +88,6 @@ def _usage_read(usage: AICreditUsageSummary | None) -> AICreditUsageSummaryRead 
     )
 
 
-def _execution_http_error(exc: AIExecutionFailedError) -> HTTPException:
-    status_code, detail = AI_FAILURE_RESPONSES[exc.error_code]
-    return HTTPException(status_code=status_code, detail=detail)
-
-
 @router.post(
     "/conversations",
     response_model=AIConversationRead,
@@ -165,7 +107,19 @@ async def create_ai_conversation(
             tenant.scope,
             user=current_user,
             title=payload.title,
+            purpose=payload.purpose,
+            dashboard_snapshot_id=payload.dashboard_snapshot_id,
         )
+    except AIConversationSourceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dashboard snapshot not found.",
+        ) from exc
+    except AIConversationSourceNotReadyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Dashboard analysis requires a typed dashboard snapshot.",
+        ) from exc
     except AIConversationTitleError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -391,7 +345,7 @@ async def submit_ai_message(
             detail="AI message content is invalid.",
         ) from exc
     except AIExecutionFailedError as exc:
-        raise _execution_http_error(exc) from exc
+        raise ai_execution_http_error(exc) from exc
     except (AIConversationIntegrityError, AIExecutionIntegrityError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

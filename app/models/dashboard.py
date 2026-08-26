@@ -21,12 +21,45 @@ from app.models.base import TenantOwnedModel, TimestampedModel, UUIDPrimaryKey, 
 
 DASHBOARD_TITLE_MAX_LENGTH = 160
 DASHBOARD_SNAPSHOT_SCHEMA_VERSION = 1
+DASHBOARD_INSIGHT_CONFIGURATION_VERSION = 1
+DASHBOARD_INSIGHT_CALCULATION_VERSION = 1
 
 
 class DashboardType(StrEnum):
     EXECUTIVE_SUMMARY = "executive_summary"
     FINANCIAL_PERFORMANCE = "financial_performance"
     OPERATIONAL_KPI = "operational_kpi"
+
+
+class DashboardGoal(StrEnum):
+    IMPROVE_CASH_FLOW = "improve_cash_flow"
+    INCREASE_PROFITABILITY = "increase_profitability"
+    REDUCE_EXPENSES = "reduce_expenses"
+    GROW_REVENUE = "grow_revenue"
+    IMPROVE_COLLECTIONS_AR = "improve_collections_ar"
+    STAY_ON_BUDGET = "stay_on_budget"
+    IMPROVE_FORECASTING = "improve_forecasting"
+    BENCHMARK_AGAINST_PEERS = "benchmark_against_peers"
+    IMPROVE_OPERATIONAL_EFFICIENCY = "improve_operational_efficiency"
+
+
+class DashboardInsightField(StrEnum):
+    PERIOD = "period"
+    LOCATION = "location"
+    EXPENSES = "expenses"
+    REVENUE = "revenue"
+    NET_CASH = "net_cash"
+    CATEGORY = "category"
+    GROSS_MARGIN = "gross_margin"
+    SPEND = "spend"
+    CASH_BALANCE = "cash_balance"
+    BUDGET = "budget"
+    DEPARTMENT = "department"
+    VENDOR = "vendor"
+    STATUS_TITLE = "status_title"
+    STATUS_DETAIL = "status_detail"
+    STATUS = "status"
+    PROGRESS = "progress"
 
 
 class Dashboard(
@@ -66,6 +99,10 @@ class Dashboard(
             "jsonb_typeof(configuration) = 'object'",
             name="ck_dashboards_configuration_object",
         ),
+        CheckConstraint(
+            "insight_configuration IS NULL OR jsonb_typeof(insight_configuration) = 'object'",
+            name="ck_dashboards_insight_configuration_object",
+        ),
         Index(
             "ix_dashboards_business_updated",
             "business_id",
@@ -90,6 +127,13 @@ class Dashboard(
             JSONB,
             nullable=False,
             default=dict,
+        ),
+    )
+    insight_configuration: dict[str, object] | None = Field(
+        default=None,
+        sa_column=Column(
+            JSONB(none_as_null=True),
+            nullable=True,
         ),
     )
 

@@ -610,6 +610,92 @@ and output limits, and writes deterministic gzip JSONL plus schema/profile JSON 
 server-owned, private, versioned S3 keys. Malformed data fails with a safe code;
 temporary storage failures retry. No public object or file-download endpoint exists.
 
+## Report-grounded dashboard insight flow
+
+The Generate Insight backend follows the three-step product flow without guessing report
+headers. Owners first read the versioned dashboard contract and the safe header/profile
+of each completed processing job:
+
+```bash
+curl http://localhost:8000/api/v1/dashboards/contracts \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+
+curl \
+  http://localhost:8000/api/v1/dashboards/sources/PASTE_PROCESSING_JOB_ID/schema \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE"
+```
+
+The contract exposes only the approved Executive Summary, Financial Performance, and
+Operational KPI types, their mapping fields, recommended reports, and the nine approved
+business goals. It also publishes the calculation field groups that must be mapped from
+the same report sheet, allowing the client to reject an invalid setup before submission.
+The source-schema response contains sheet names, normalized header names, null/non-null
+counts, and value-type counts. It never returns report rows, S3 coordinates, or object
+credentials.
+
+Create the dashboard only after the user has explicitly mapped the chosen report headers.
+For example, an Executive Summary request includes all seven required semantic fields:
+
+```json
+{
+  "dashboard_type": "executive_summary",
+  "title": "Executive Insight",
+  "configuration": {"currency": "USD", "period": "monthly"},
+  "insight_configuration": {
+    "version": 1,
+    "goals": ["improve_cash_flow", "reduce_expenses"],
+    "datasets": [
+      {
+        "processing_job_id": "PASTE_PROCESSING_JOB_ID",
+        "sheet_index": 0,
+        "sheet_name": "data",
+        "columns": {
+          "period": "Date",
+          "location": "Department",
+          "expenses": "Expenses",
+          "revenue": "Revenue",
+          "net_cash": "Cash Balance",
+          "category": "Category",
+          "gross_margin": "Gross margin"
+        }
+      }
+    ]
+  }
+}
+```
+
+Submit that JSON to `POST /api/v1/dashboards`, then materialize it with
+`POST /api/v1/dashboards/{dashboard_id}/snapshots`. For a typed dashboard, the submitted
+source-job set must exactly match the mapped job set. The service validates every sheet
+and column against the immutable profile, reads only the pinned processed artifact
+versions, and produces a deterministic snapshot containing type-specific KPIs,
+chart-ready series, breakdowns/tables, anomalies, risks, evidence-backed goal
+recommendations, and calculated-versus-AI explainability. The Executive cash-flow chart
+separates mapped actuals from a clearly labelled three-period linear projection based on
+up to the three latest mapped period changes. Invalid numeric mappings or changed/missing
+artifacts fail closed instead of silently substituting another column. The same semantic
+measure and period cannot come from multiple mapped sheets because the service cannot
+safely infer whether those rows are duplicates or intentional partitions. Required
+numeric measures must also cover the same mapped periods before the service calculates
+cross-measure totals, ratios, margins, or forecasts.
+
+Generate the snapshot-bound Gemini narrative with a new idempotency key:
+
+```bash
+curl -X POST \
+  http://localhost:8000/api/v1/dashboards/PASTE_DASHBOARD_ID/snapshots/PASTE_SNAPSHOT_ID/analysis \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Idempotency-Key: PASTE_A_NEW_UUID_HERE"
+```
+
+The prompt contains bounded calculated evidence plus upload/job/dashboard/snapshot
+provenance, never normalized report rows. A successful response must contain exactly
+Summary, Opportunity, Recommendation, and Disclaimer sections; an unusable provider
+response releases the reserved AI credit. Snapshot detail reads return the stored AI
+analysis alongside the immutable calculated payload. Existing dashboards that omit
+`insight_configuration` remain readable and materializable, but intentionally cannot use
+the dedicated typed-analysis endpoint.
+
 ## Testing
 
 ### Fast checks, no Docker required
@@ -748,5 +834,11 @@ Never pass real production passwords through shell history. In production, use a
       server-owned tenant/job keys; duplicate delivery does not rewrite completed jobs.
 - [ ] Temporary storage failures retry the same job UUID, while malformed inputs fail
       with safe detail-free error codes.
+- [ ] Dashboard contract and source-schema routes expose only the approved three types,
+      nine goals, and safe immutable report header metadata.
+- [ ] Typed dashboard snapshots require exact explicit mappings and calculate the
+      type-specific KPI, chart, table, anomaly, risk, and recommendation payloads.
+- [ ] Dashboard AI analysis is idempotent, consumes one governed AI credit, uses only
+      bounded snapshot evidence, and returns the required four narrative sections.
 - [ ] The worker responds to `inspect ping` and completes the queued `spike.system.ping` task.
 - [ ] `ruff` and both test suites pass.

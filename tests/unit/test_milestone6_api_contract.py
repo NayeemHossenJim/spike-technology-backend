@@ -25,6 +25,7 @@ def test_dashboard_openapi_contract_is_tenant_derived() -> None:
         "dashboard_type",
         "title",
         "configuration",
+        "insight_configuration",
     }
     assert "business_id" not in create_properties
     assert "created_by_user_id" not in create_properties
