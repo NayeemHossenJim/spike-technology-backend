@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     aws_max_attempts: int = 3
     email_verification_expire_minutes: int = 10
     password_reset_expire_minutes: int = 10
+    email_two_step_expire_minutes: int = 10
     otp_max_attempts: int = 5
     otp_resend_cooldown_seconds: int = 60
     terms_version: str = "v1"
@@ -173,6 +174,8 @@ class Settings(BaseSettings):
             raise ValueError("EMAIL_VERIFICATION_EXPIRE_MINUTES must be greater than zero")
         if self.password_reset_expire_minutes <= 0:
             raise ValueError("PASSWORD_RESET_EXPIRE_MINUTES must be greater than zero")
+        if not 1 <= self.email_two_step_expire_minutes <= 10:
+            raise ValueError("EMAIL_TWO_STEP_EXPIRE_MINUTES must be between 1 and 10")
         if self.otp_max_attempts <= 0:
             raise ValueError("OTP_MAX_ATTEMPTS must be greater than zero")
         if self.otp_resend_cooldown_seconds < 0:

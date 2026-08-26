@@ -64,6 +64,7 @@ from app.api.deps import (  # noqa: E402
 )
 from app.db.session import get_session  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.models.auth import EmailTwoStepPurpose  # noqa: E402
 from app.services.email import get_email_sender  # noqa: E402
 from app.services.gemini_gateway import (  # noqa: E402
     GeminiGatewayError,
@@ -81,6 +82,8 @@ class InMemoryEmailSender:
     verification_otps: list[tuple[str, str]] = field(default_factory=list)
     password_reset_otps: list[tuple[str, str]] = field(default_factory=list)
     email_change_otps: list[tuple[str, str]] = field(default_factory=list)
+    email_two_step_otps: list[tuple[str, str, EmailTwoStepPurpose]] = field(default_factory=list)
+    email_two_step_changes: list[tuple[str, bool]] = field(default_factory=list)
 
     async def send_verification_otp(self, recipient: str, otp: str) -> None:
         self.verification_otps.append((recipient, otp))
@@ -90,6 +93,22 @@ class InMemoryEmailSender:
 
     async def send_email_change_otp(self, recipient: str, otp: str) -> None:
         self.email_change_otps.append((recipient, otp))
+
+    async def send_email_two_step_otp(
+        self,
+        recipient: str,
+        otp: str,
+        purpose: EmailTwoStepPurpose,
+    ) -> None:
+        self.email_two_step_otps.append((recipient, otp, purpose))
+
+    async def send_email_two_step_change_notice(
+        self,
+        recipient: str,
+        *,
+        enabled: bool,
+    ) -> None:
+        self.email_two_step_changes.append((recipient, enabled))
 
 
 @dataclass

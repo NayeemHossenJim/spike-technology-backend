@@ -19,6 +19,8 @@ from app.models.ai import (
 )
 from app.models.auth import (
     EmailChangeOTP,
+    EmailTwoStepChallenge,
+    EmailTwoStepPurpose,
     EmailVerificationOTP,
     PasswordResetOTP,
     RefreshToken,
@@ -106,6 +108,8 @@ __all__ = [
     "DashboardType",
     "EmailVerificationOTP",
     "EmailChangeOTP",
+    "EmailTwoStepChallenge",
+    "EmailTwoStepPurpose",
     "EntitlementKey",
     "EntitlementSource",
     "Industry",

@@ -291,7 +291,12 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
   -d '{"email":"test@example.com","password":"CorrectHorseBattery9","remember_me":true}'
 ```
 
-The JSON response contains the short-lived access token. The rotating refresh token is deliberately **not** returned to browser JavaScript; it is stored in an `HttpOnly`, `SameSite=Lax` cookie scoped to `/api/v1/auth`.
+When email two-step verification is disabled, the JSON response contains the short-lived
+access token. The rotating refresh token is deliberately **not** returned to browser
+JavaScript; it is stored in an `HttpOnly`, `SameSite=Lax` cookie scoped to
+`/api/v1/auth`. Accounts that enable the optional email-code step instead receive the
+documented `202` challenge response described below; no session exists until that code
+is verified.
 
 - `remember_me: false` (the default) creates a browser-session cookie that is removed when the browser closes.
 - `remember_me: true` creates a cookie lasting 30 days, matching `REFRESH_TOKEN_EXPIRE_DAYS`.
@@ -410,6 +415,78 @@ Frontend integration must add two security confirmations not present in the supp
 frame: a current-password field before requesting an email change, and an OTP step for
 the new address. The Delete Account control must open the password plus `DELETE`
 confirmation dialog and render the documented `409` billing/last-admin messages.
+
+### Email two-step verification
+
+Figma's **Security Settings** flow sends a six-digit code to the registered email before
+each login. The backend names this feature *email two-step verification*, not strong MFA:
+[NIST SP 800-63B](https://pages.nist.gov/800-63-4/sp800-63b/authenticators/)
+explicitly excludes email from acceptable out-of-band authenticators, and the
+[OWASP email guidance](https://cheatsheetseries.owasp.org/cheatsheets/Email_Validation_and_Verification_Cheat_Sheet.html)
+describes email as a weak factor. A future TOTP or WebAuthn factor should replace this
+channel when standards-compliant MFA is required.
+
+Read the authenticated state with `GET /api/v1/users/me/email-two-step`. Enabling the
+flow requires both the registered email and the current password because OWASP advises
+reauthentication before changing an authentication factor:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/users/me/email-two-step/enable \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email":"test@example.com",
+    "current_password":"CorrectHorseBattery9"
+  }'
+```
+
+The `202` response contains an opaque `challenge_id`, a masked destination, and the
+remaining lifetime, but never the OTP. Confirm the emailed code:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/users/me/email-two-step/enable/confirm \
+  -H "Authorization: Bearer PASTE_ACCESS_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "challenge_id":"PASTE_CHALLENGE_UUID_HERE",
+    "otp":"PASTE_SIX_DIGIT_OTP_HERE"
+  }'
+```
+
+Enabling or disabling the step increments the account session generation, revokes all
+refresh tokens, invalidates every pending email-code challenge, and clears the browser
+cookie. A separate security notice is sent after either setting change. The client must
+discard its old access token and return to sign-in. This current-password requirement is
+an intentional frontend addition to the supplied Figma modal, which currently shows
+only the email field.
+
+After the password succeeds for an enabled account, `POST /api/v1/auth/login` returns
+`202` with `verification_required: true`; it returns no access token and sets no refresh
+cookie. Complete sign-in with:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/email-two-step/verify \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{
+    "challenge_id":"PASTE_CHALLENGE_UUID_HERE",
+    "otp":"PASTE_SIX_DIGIT_OTP_HERE"
+  }'
+```
+
+Only this successful verification creates the access/refresh pair. `remember_me` is
+bound server-side to the challenge and cannot be changed during verification. Login
+resends use `POST /api/v1/auth/email-two-step/resend`; authenticated enable/disable
+resends use `POST /api/v1/users/me/email-two-step/resend`. Requests inside
+`OTP_RESEND_COOLDOWN_SECONDS` reuse the live challenge without sending another email.
+Every challenge is single-use, bound to the account session generation, expires within
+`EMAIL_TWO_STEP_EXPIRE_MINUTES` (maximum 10), and is exhausted after
+`OTP_MAX_ATTEMPTS` failures.
+
+Disabling is also a reauthenticated two-step operation: request it with
+`POST /api/v1/users/me/email-two-step/disable` and the current password, then submit the
+returned challenge and emailed OTP to
+`POST /api/v1/users/me/email-two-step/disable/confirm`.
 
 Rotate the refresh token and receive a new access token. There is no JSON request body:
 

@@ -24,6 +24,7 @@ from app.core.security import (
 )
 from app.models.auth import (
     EmailChangeOTP,
+    EmailTwoStepChallenge,
     EmailVerificationOTP,
     PasswordResetOTP,
     RefreshToken,
@@ -126,7 +127,12 @@ class AccountSecurityService:
         return int(result.rowcount or 0)
 
     async def _invalidate_auth_otps(self, user_id: UUID, *, now) -> None:
-        for otp_model in (EmailVerificationOTP, PasswordResetOTP, EmailChangeOTP):
+        for otp_model in (
+            EmailVerificationOTP,
+            PasswordResetOTP,
+            EmailChangeOTP,
+            EmailTwoStepChallenge,
+        ):
             await self.session.execute(
                 update(otp_model)
                 .where(
@@ -431,6 +437,8 @@ class AccountSecurityService:
             user.password_hash = await asyncify(hash_password)(secrets.token_urlsafe(48))
             user.is_active = False
             user.is_verified = False
+            user.email_two_step_enabled = False
+            user.email_two_step_enabled_at = None
             user.last_login_at = None
             user.deleted_at = now
             user.auth_session_version += 1

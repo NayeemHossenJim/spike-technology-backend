@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.password_policy import validate_password_strength
+from app.models.auth import EmailTwoStepPurpose
 from app.models.user import Industry, JobRole, UserRole
 
 
@@ -38,6 +39,18 @@ class LoginRequest(AuthRequest):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
     remember_me: bool = False
+
+
+class EmailTwoStepChallengeRequest(AuthRequest):
+    challenge_id: UUID
+
+
+class VerifyEmailTwoStepLoginRequest(EmailTwoStepChallengeRequest):
+    otp: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class ResendEmailTwoStepLoginRequest(EmailTwoStepChallengeRequest):
+    pass
 
 
 class ForgotPasswordRequest(AuthRequest):
@@ -84,12 +97,22 @@ class UserRead(BaseModel):
     bio: str | None
     is_active: bool
     is_verified: bool
+    email_two_step_enabled: bool
 
 
 class AccessTokenResponse(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     access_token_expires_in: int
+
+
+class EmailTwoStepChallengeResponse(BaseModel):
+    verification_required: Literal[True] = True
+    challenge_id: UUID
+    purpose: EmailTwoStepPurpose
+    delivery_method: Literal["email"] = "email"
+    masked_destination: str
+    expires_in: int
 
 
 class MessageResponse(BaseModel):

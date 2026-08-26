@@ -67,6 +67,11 @@ class User(UUIDPrimaryKey, TimestampedModel, table=True):
             name="ck_users_auth_session_version",
         ),
         CheckConstraint(
+            "(email_two_step_enabled AND email_two_step_enabled_at IS NOT NULL) OR "
+            "(NOT email_two_step_enabled AND email_two_step_enabled_at IS NULL)",
+            name="ck_users_email_two_step_state",
+        ),
+        CheckConstraint(
             "username IS NULL OR "
             f"char_length(trim(username)) BETWEEN 1 AND {PROFILE_USERNAME_MAX_LENGTH}",
             name="ck_users_profile_username",
@@ -171,6 +176,19 @@ class User(UUIDPrimaryKey, TimestampedModel, table=True):
     is_verified: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, default=False),
+    )
+    email_two_step_enabled: bool = Field(
+        default=False,
+        sa_column=Column(
+            Boolean,
+            nullable=False,
+            default=False,
+            server_default="false",
+        ),
+    )
+    email_two_step_enabled_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )
     last_login_at: datetime | None = Field(
         default=None,

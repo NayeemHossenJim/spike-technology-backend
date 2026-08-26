@@ -19,7 +19,7 @@ def make_alembic_config() -> Config:
 
 def test_alembic_has_exactly_one_migration_head() -> None:
     heads = ScriptDirectory.from_config(make_alembic_config()).get_heads()
-    assert heads == ["0018_gap04_account_security"]
+    assert heads == ["0019_gap05_email_two_step"]
     assert all(len(head) <= 32 for head in heads)
 
 

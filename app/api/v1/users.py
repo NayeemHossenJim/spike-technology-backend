@@ -9,16 +9,23 @@ from app.api.deps import (
     enforce_auth_rate_limit_dependency,
     get_account_security_service,
     get_current_user,
+    get_email_two_step_service,
 )
 from app.core.config import Settings, get_settings
 from app.core.session_cookie import clear_refresh_cookie
 from app.db.session import get_session
+from app.models.auth import EmailTwoStepPurpose
 from app.models.user import User
-from app.schemas.auth import MessageResponse, UserRead
+from app.schemas.auth import EmailTwoStepChallengeResponse, MessageResponse, UserRead
 from app.schemas.user import (
     UserAccountDeleteRequest,
     UserEmailChangeConfirm,
     UserEmailChangeRequest,
+    UserEmailTwoStepChallengeRequest,
+    UserEmailTwoStepConfirmRequest,
+    UserEmailTwoStepDisableRequest,
+    UserEmailTwoStepEnableRequest,
+    UserEmailTwoStepStatusResponse,
     UserPasswordChangeRequest,
     UserProfileUpdate,
 )
@@ -33,6 +40,14 @@ from app.services.account_security import (
     LastSuperAdminDeletionError,
     PasswordReuseError,
 )
+from app.services.email_two_step import (
+    EmailTwoStepChallengeInvalidError,
+    EmailTwoStepEmailMismatchError,
+    EmailTwoStepNotFoundError,
+    EmailTwoStepPasswordInvalidError,
+    EmailTwoStepService,
+    EmailTwoStepStateConflictError,
+)
 from app.services.user_profiles import (
     UserProfileConflictError,
     UserProfileNotFoundError,
@@ -43,6 +58,10 @@ router = APIRouter(prefix="/users", tags=["Users"])
 AccountSecurityServiceDep = Annotated[
     AccountSecurityService,
     Depends(get_account_security_service),
+]
+EmailTwoStepServiceDep = Annotated[
+    EmailTwoStepService,
+    Depends(get_email_two_step_service),
 ]
 RateLimitDep = Annotated[None, Depends(enforce_auth_rate_limit_dependency)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -90,6 +109,199 @@ def _raise_current_password_invalid(exc: CurrentPasswordInvalidError) -> None:
         detail="The current password is incorrect.",
         headers={"WWW-Authenticate": "Bearer"},
     ) from exc
+
+
+def _raise_email_two_step_password_invalid(
+    exc: EmailTwoStepPasswordInvalidError,
+) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="The current password is incorrect.",
+        headers={"WWW-Authenticate": "Bearer"},
+    ) from exc
+
+
+def _raise_email_two_step_challenge_invalid(exc: Exception) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="The email verification challenge or code is invalid or has expired.",
+    ) from exc
+
+
+@router.get(
+    "/me/email-two-step",
+    response_model=UserEmailTwoStepStatusResponse,
+)
+async def read_current_user_email_two_step_status(
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: EmailTwoStepServiceDep,
+) -> UserEmailTwoStepStatusResponse:
+    try:
+        return await service.get_status(current_user.id)
+    except EmailTwoStepNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User account not found.",
+        ) from exc
+
+
+@router.post(
+    "/me/email-two-step/enable",
+    response_model=EmailTwoStepChallengeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        401: {"description": "Current password is incorrect."},
+        409: {"description": "Email or two-step state conflicts with the account."},
+    },
+)
+async def request_current_user_email_two_step_enable(
+    payload: UserEmailTwoStepEnableRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: EmailTwoStepServiceDep,
+    _: RateLimitDep,
+) -> EmailTwoStepChallengeResponse:
+    try:
+        return await service.request_enable(
+            current_user.id,
+            email=str(payload.email),
+            current_password=payload.current_password,
+        )
+    except EmailTwoStepPasswordInvalidError as exc:
+        _raise_email_two_step_password_invalid(exc)
+    except EmailTwoStepEmailMismatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The email address does not match the current account email.",
+        ) from exc
+    except EmailTwoStepStateConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email verification is already enabled.",
+        ) from exc
+    except EmailTwoStepNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User account not found.",
+        ) from exc
+
+
+@router.post(
+    "/me/email-two-step/enable/confirm",
+    response_model=UserEmailTwoStepStatusResponse,
+    responses={400: {"description": "Challenge or OTP is invalid or expired."}},
+)
+async def confirm_current_user_email_two_step_enable(
+    payload: UserEmailTwoStepConfirmRequest,
+    response: Response,
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: EmailTwoStepServiceDep,
+    settings: SettingsDep,
+    _: RateLimitDep,
+) -> UserEmailTwoStepStatusResponse:
+    try:
+        result = await service.confirm_enable(
+            current_user.id,
+            payload.challenge_id,
+            raw_otp=payload.otp,
+        )
+    except (EmailTwoStepChallengeInvalidError, EmailTwoStepNotFoundError) as exc:
+        _raise_email_two_step_challenge_invalid(exc)
+    except EmailTwoStepStateConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email verification is already enabled.",
+        ) from exc
+    clear_refresh_cookie(response, settings=settings)
+    return result
+
+
+@router.post(
+    "/me/email-two-step/disable",
+    response_model=EmailTwoStepChallengeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        401: {"description": "Current password is incorrect."},
+        409: {"description": "Email verification is not enabled."},
+    },
+)
+async def request_current_user_email_two_step_disable(
+    payload: UserEmailTwoStepDisableRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: EmailTwoStepServiceDep,
+    _: RateLimitDep,
+) -> EmailTwoStepChallengeResponse:
+    try:
+        return await service.request_disable(
+            current_user.id,
+            current_password=payload.current_password,
+        )
+    except EmailTwoStepPasswordInvalidError as exc:
+        _raise_email_two_step_password_invalid(exc)
+    except EmailTwoStepStateConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email verification is not enabled.",
+        ) from exc
+    except EmailTwoStepNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User account not found.",
+        ) from exc
+
+
+@router.post(
+    "/me/email-two-step/disable/confirm",
+    response_model=UserEmailTwoStepStatusResponse,
+    responses={400: {"description": "Challenge or OTP is invalid or expired."}},
+)
+async def confirm_current_user_email_two_step_disable(
+    payload: UserEmailTwoStepConfirmRequest,
+    response: Response,
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: EmailTwoStepServiceDep,
+    settings: SettingsDep,
+    _: RateLimitDep,
+) -> UserEmailTwoStepStatusResponse:
+    try:
+        result = await service.confirm_disable(
+            current_user.id,
+            payload.challenge_id,
+            raw_otp=payload.otp,
+        )
+    except (EmailTwoStepChallengeInvalidError, EmailTwoStepNotFoundError) as exc:
+        _raise_email_two_step_challenge_invalid(exc)
+    except EmailTwoStepStateConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email verification is not enabled.",
+        ) from exc
+    clear_refresh_cookie(response, settings=settings)
+    return result
+
+
+@router.post(
+    "/me/email-two-step/resend",
+    response_model=EmailTwoStepChallengeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={400: {"description": "Challenge is invalid or expired."}},
+)
+async def resend_current_user_email_two_step_challenge(
+    payload: UserEmailTwoStepChallengeRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: EmailTwoStepServiceDep,
+    _: RateLimitDep,
+) -> EmailTwoStepChallengeResponse:
+    try:
+        return await service.resend(
+            payload.challenge_id,
+            allowed_purposes=(
+                EmailTwoStepPurpose.ENABLE,
+                EmailTwoStepPurpose.DISABLE,
+            ),
+            expected_user_id=current_user.id,
+        )
+    except (EmailTwoStepChallengeInvalidError, EmailTwoStepNotFoundError) as exc:
+        _raise_email_two_step_challenge_invalid(exc)
 
 
 @router.post(

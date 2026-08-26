@@ -13,13 +13,16 @@ from app.core.session_cookie import (
 )
 from app.schemas.auth import (
     AccessTokenResponse,
+    EmailTwoStepChallengeResponse,
     ForgotPasswordRequest,
     LoginRequest,
     MessageResponse,
     RegisterRequest,
+    ResendEmailTwoStepLoginRequest,
     ResetPasswordRequest,
     UserRead,
     VerifyEmailOTPRequest,
+    VerifyEmailTwoStepLoginRequest,
     VerifyPasswordResetOTPRequest,
 )
 from app.services.auth import (
@@ -29,6 +32,11 @@ from app.services.auth import (
     EmailVerificationRequiredError,
     InactiveAccountError,
     TokenValidationError,
+)
+from app.services.email_two_step import (
+    EmailTwoStepChallengeInvalidError,
+    EmailTwoStepNotFoundError,
+    EmailTwoStepStateConflictError,
 )
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -77,16 +85,25 @@ async def resend_verification(
     )
 
 
-@router.post("/login", response_model=AccessTokenResponse)
+@router.post(
+    "/login",
+    response_model=AccessTokenResponse | EmailTwoStepChallengeResponse,
+    responses={
+        202: {
+            "model": EmailTwoStepChallengeResponse,
+            "description": "Password accepted; email-code verification is required.",
+        }
+    },
+)
 async def login(
     payload: LoginRequest,
     response: Response,
     service: AuthServiceDep,
     settings: SettingsDep,
     _: RateLimitDep,
-) -> AccessTokenResponse:
+) -> AccessTokenResponse | EmailTwoStepChallengeResponse:
     try:
-        tokens = await service.login(payload)
+        result = await service.login(payload)
     except AuthenticationError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -103,6 +120,50 @@ async def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This account is inactive.",
         ) from exc
+    except EmailTwoStepStateConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email verification state changed. Please try signing in again.",
+        ) from exc
+    if isinstance(result, EmailTwoStepChallengeResponse):
+        response.status_code = status.HTTP_202_ACCEPTED
+        return result
+    set_refresh_cookie(
+        response,
+        refresh_token=result.refresh_token,
+        remember_me=result.remember_me,
+        settings=settings,
+    )
+    return result.access
+
+
+def _raise_invalid_email_two_step_challenge(exc: Exception) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="The email verification challenge or code is invalid or has expired.",
+    ) from exc
+
+
+@router.post(
+    "/email-two-step/verify",
+    response_model=AccessTokenResponse,
+    responses={400: {"description": "Challenge or OTP is invalid or expired."}},
+)
+async def verify_email_two_step_login(
+    payload: VerifyEmailTwoStepLoginRequest,
+    response: Response,
+    service: AuthServiceDep,
+    settings: SettingsDep,
+    _: RateLimitDep,
+) -> AccessTokenResponse:
+    try:
+        tokens = await service.verify_email_two_step_login(payload)
+    except (
+        EmailTwoStepChallengeInvalidError,
+        EmailTwoStepNotFoundError,
+        EmailTwoStepStateConflictError,
+    ) as exc:
+        _raise_invalid_email_two_step_challenge(exc)
     set_refresh_cookie(
         response,
         refresh_token=tokens.refresh_token,
@@ -110,6 +171,27 @@ async def login(
         settings=settings,
     )
     return tokens.access
+
+
+@router.post(
+    "/email-two-step/resend",
+    response_model=EmailTwoStepChallengeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={400: {"description": "Challenge is invalid or expired."}},
+)
+async def resend_email_two_step_login(
+    payload: ResendEmailTwoStepLoginRequest,
+    service: AuthServiceDep,
+    _: RateLimitDep,
+) -> EmailTwoStepChallengeResponse:
+    try:
+        return await service.resend_email_two_step_login(payload)
+    except (
+        EmailTwoStepChallengeInvalidError,
+        EmailTwoStepNotFoundError,
+        EmailTwoStepStateConflictError,
+    ) as exc:
+        _raise_invalid_email_two_step_challenge(exc)
 
 
 @router.post("/refresh", response_model=AccessTokenResponse)

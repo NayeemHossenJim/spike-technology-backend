@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -113,6 +115,31 @@ class UserEmailChangeRequest(UserSecurityRequest):
 class UserEmailChangeConfirm(UserSecurityRequest):
     new_email: EmailStr
     otp: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class UserEmailTwoStepEnableRequest(UserSecurityRequest):
+    email: EmailStr
+    current_password: str = Field(min_length=1, max_length=128)
+
+
+class UserEmailTwoStepDisableRequest(UserSecurityRequest):
+    current_password: str = Field(min_length=1, max_length=128)
+
+
+class UserEmailTwoStepChallengeRequest(UserSecurityRequest):
+    challenge_id: UUID
+
+
+class UserEmailTwoStepConfirmRequest(UserEmailTwoStepChallengeRequest):
+    otp: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+
+
+class UserEmailTwoStepStatusResponse(BaseModel):
+    enabled: bool
+    enabled_at: datetime | None
+    verification_method: Literal["email_code"] = "email_code"
+    masked_destination: str
+    reauthentication_required: bool = False
 
 
 class UserPasswordChangeRequest(UserSecurityRequest):

@@ -113,6 +113,7 @@ async def test_profile_update_persists_figma_fields_and_synchronizes_business_in
         "bio": "Finance operations lead.",
         "is_active": True,
         "is_verified": True,
+        "email_two_step_enabled": False,
     }
 
     me = await client.get(

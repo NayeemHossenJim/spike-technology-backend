@@ -9,6 +9,7 @@ from asyncer import asyncify
 
 from app.core.aws import build_aws_client_config
 from app.core.config import EmailBackend, Settings, get_settings
+from app.models.auth import EmailTwoStepPurpose
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,20 @@ class EmailSender(Protocol):
     async def send_password_reset_otp(self, recipient: str, otp: str) -> None: ...
 
     async def send_email_change_otp(self, recipient: str, otp: str) -> None: ...
+
+    async def send_email_two_step_otp(
+        self,
+        recipient: str,
+        otp: str,
+        purpose: EmailTwoStepPurpose,
+    ) -> None: ...
+
+    async def send_email_two_step_change_notice(
+        self,
+        recipient: str,
+        *,
+        enabled: bool,
+    ) -> None: ...
 
 
 class ConsoleEmailSender:
@@ -49,6 +64,32 @@ class ConsoleEmailSender:
             recipient,
             otp,
             self.settings.email_verification_expire_minutes,
+        )
+
+    async def send_email_two_step_otp(
+        self,
+        recipient: str,
+        otp: str,
+        purpose: EmailTwoStepPurpose,
+    ) -> None:
+        logger.info(
+            "Development email two-step OTP for %s (%s): %s. Expires in %s minutes.",
+            recipient,
+            purpose.value,
+            otp,
+            self.settings.email_two_step_expire_minutes,
+        )
+
+    async def send_email_two_step_change_notice(
+        self,
+        recipient: str,
+        *,
+        enabled: bool,
+    ) -> None:
+        logger.info(
+            "Development email two-step setting changed for %s: %s.",
+            recipient,
+            "enabled" if enabled else "disabled",
         )
 
 
@@ -110,6 +151,50 @@ class SesEmailSender:
                 "This code expires in "
                 f"{self.settings.email_verification_expire_minutes} minutes. "
                 "If you did not request this, secure your account immediately."
+            ),
+        )
+
+    async def send_email_two_step_otp(
+        self,
+        recipient: str,
+        otp: str,
+        purpose: EmailTwoStepPurpose,
+    ) -> None:
+        subjects = {
+            EmailTwoStepPurpose.ENABLE: "Enable email verification on your Spike account",
+            EmailTwoStepPurpose.DISABLE: "Disable email verification on your Spike account",
+            EmailTwoStepPurpose.LOGIN: "Complete your Spike Technology sign-in",
+        }
+        action = {
+            EmailTwoStepPurpose.ENABLE: "enable email verification",
+            EmailTwoStepPurpose.DISABLE: "disable email verification",
+            EmailTwoStepPurpose.LOGIN: "complete your sign-in",
+        }[purpose]
+        await self._send(
+            recipient=recipient,
+            subject=subjects[purpose],
+            body=(
+                f"Use this code to {action}: {otp}\n\n"
+                "This one-time code expires in "
+                f"{self.settings.email_two_step_expire_minutes} minutes. "
+                "If you did not initiate this action, secure your account immediately."
+            ),
+        )
+
+    async def send_email_two_step_change_notice(
+        self,
+        recipient: str,
+        *,
+        enabled: bool,
+    ) -> None:
+        state = "enabled" if enabled else "disabled"
+        await self._send(
+            recipient=recipient,
+            subject=f"Email verification was {state} on your Spike account",
+            body=(
+                f"Email verification was {state} on your Spike Technology account. "
+                "If you did not make this change, reset your password and contact support "
+                "immediately."
             ),
         )
 

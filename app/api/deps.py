@@ -19,6 +19,7 @@ from app.services.account_security import AccountSecurityService
 from app.services.ai_credits import digest_ai_idempotency_key
 from app.services.auth import AuthService
 from app.services.email import EmailSender, get_email_sender
+from app.services.email_two_step import EmailTwoStepService
 from app.services.rate_limit import enforce_ai_rate_limit, enforce_auth_rate_limit
 from app.services.redis import get_redis
 from app.services.tenant import (
@@ -46,6 +47,18 @@ def get_account_security_service(
     email_sender: Annotated[EmailSender, Depends(get_email_sender)],
 ) -> AccountSecurityService:
     return AccountSecurityService(
+        session=session,
+        settings=settings,
+        email_sender=email_sender,
+    )
+
+
+def get_email_two_step_service(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    email_sender: Annotated[EmailSender, Depends(get_email_sender)],
+) -> EmailTwoStepService:
+    return EmailTwoStepService(
         session=session,
         settings=settings,
         email_sender=email_sender,

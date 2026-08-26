@@ -28,6 +28,8 @@ from app.core.security import (
 )
 from app.models.auth import (
     EmailChangeOTP,
+    EmailTwoStepChallenge,
+    EmailTwoStepPurpose,
     EmailVerificationOTP,
     PasswordResetOTP,
     RefreshToken,
@@ -35,14 +37,18 @@ from app.models.auth import (
 from app.models.user import User
 from app.schemas.auth import (
     AccessTokenResponse,
+    EmailTwoStepChallengeResponse,
     ForgotPasswordRequest,
     LoginRequest,
     RegisterRequest,
+    ResendEmailTwoStepLoginRequest,
     ResetPasswordRequest,
     VerifyEmailOTPRequest,
+    VerifyEmailTwoStepLoginRequest,
     VerifyPasswordResetOTPRequest,
 )
 from app.services.email import EmailSender
+from app.services.email_two_step import EmailTwoStepService
 
 logger = logging.getLogger(__name__)
 
@@ -85,15 +91,23 @@ class AuthService:
         self.session = session
         self.settings = settings
         self.email_sender = email_sender
+        self.email_two_step = EmailTwoStepService(
+            session=session,
+            settings=settings,
+            email_sender=email_sender,
+        )
 
     async def _get_user_by_email(
         self,
         email: str,
         *,
         lock_for_otp: bool = False,
+        lock_for_update: bool = False,
     ) -> User | None:
         statement = select(User).where(User.email == normalize_email(email))
-        if lock_for_otp:
+        if lock_for_update:
+            statement = statement.with_for_update()
+        elif lock_for_otp:
             # PostgreSQL FOR NO KEY UPDATE serializes per-user OTP state while remaining
             # compatible with foreign-key checks made by concurrent session inserts.
             statement = statement.with_for_update(key_share=True)
@@ -273,7 +287,7 @@ class AuthService:
         await self.session.commit()
 
     async def authenticate(self, payload: LoginRequest) -> User:
-        user = await self._get_user_by_email(payload.email)
+        user = await self._get_user_by_email(payload.email, lock_for_update=True)
         if not user:
             await asyncify(verify_password_against_dummy)(payload.password)
             raise AuthenticationError
@@ -284,8 +298,6 @@ class AuthService:
         if not user.is_verified:
             raise EmailVerificationRequiredError
 
-        user.last_login_at = utc_now()
-        await self.session.commit()
         return user
 
     async def _create_token_pair(self, user: User, *, remember_me: bool) -> SessionTokens:
@@ -322,9 +334,41 @@ class AuthService:
             remember_me=remember_me,
         )
 
-    async def login(self, payload: LoginRequest) -> SessionTokens:
+    async def login(
+        self,
+        payload: LoginRequest,
+    ) -> SessionTokens | EmailTwoStepChallengeResponse:
         user = await self.authenticate(payload)
+        if user.email_two_step_enabled:
+            return await self.email_two_step.start_login(
+                user,
+                remember_me=payload.remember_me,
+            )
+        user.last_login_at = utc_now()
         return await self._create_token_pair(user, remember_me=payload.remember_me)
+
+    async def verify_email_two_step_login(
+        self,
+        payload: VerifyEmailTwoStepLoginRequest,
+    ) -> SessionTokens:
+        grant = await self.email_two_step.consume_login(
+            payload.challenge_id,
+            raw_otp=payload.otp,
+        )
+        grant.user.last_login_at = utc_now()
+        return await self._create_token_pair(
+            grant.user,
+            remember_me=grant.remember_me,
+        )
+
+    async def resend_email_two_step_login(
+        self,
+        payload: ResendEmailTwoStepLoginRequest,
+    ) -> EmailTwoStepChallengeResponse:
+        return await self.email_two_step.resend(
+            payload.challenge_id,
+            allowed_purposes=(EmailTwoStepPurpose.LOGIN,),
+        )
 
     async def refresh(self, raw_token: str) -> SessionTokens:
         try:
@@ -428,6 +472,14 @@ class AuthService:
             .where(
                 EmailChangeOTP.user_id == user.id,
                 EmailChangeOTP.used_at.is_(None),
+            )
+            .values(used_at=now)
+        )
+        await self.session.execute(
+            update(EmailTwoStepChallenge)
+            .where(
+                EmailTwoStepChallenge.user_id == user.id,
+                EmailTwoStepChallenge.used_at.is_(None),
             )
             .values(used_at=now)
         )

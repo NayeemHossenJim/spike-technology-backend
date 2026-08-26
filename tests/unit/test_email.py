@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.config import AppEnvironment, Settings
+from app.models.auth import EmailTwoStepPurpose
 from app.services.email import ConsoleEmailSender, SesEmailSender
 
 
@@ -76,3 +77,63 @@ async def test_ses_sender_builds_email_change_notice_without_network_access() ->
         "Confirm your new Spike Technology email"
     )
     assert "654321" in payload["Content"]["Simple"]["Body"]["Text"]["Data"]
+
+
+@pytest.mark.asyncio
+async def test_console_sender_logs_email_two_step_purpose(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sender = ConsoleEmailSender(make_settings())
+
+    with caplog.at_level(logging.INFO, logger="app.services.email"):
+        await sender.send_email_two_step_otp(
+            "user@example.com",
+            "321654",
+            EmailTwoStepPurpose.LOGIN,
+        )
+
+    assert "Development email two-step OTP for user@example.com (login): 321654" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_ses_sender_builds_email_two_step_notice_without_network_access() -> None:
+    settings = make_settings()
+    settings.aws_region = "us-east-1"
+    settings.ses_from_email = "no-reply@example.com"
+    mock_client = MagicMock()
+
+    with patch("app.services.email.boto3.client", return_value=mock_client):
+        sender = SesEmailSender(settings)
+        await sender.send_email_two_step_otp(
+            "user@example.com",
+            "321654",
+            EmailTwoStepPurpose.DISABLE,
+        )
+
+    payload = mock_client.send_email.call_args.kwargs
+    assert payload["Destination"] == {"ToAddresses": ["user@example.com"]}
+    assert payload["Content"]["Simple"]["Subject"]["Data"] == (
+        "Disable email verification on your Spike account"
+    )
+    assert "321654" in payload["Content"]["Simple"]["Body"]["Text"]["Data"]
+
+
+@pytest.mark.asyncio
+async def test_ses_sender_builds_setting_change_security_notice() -> None:
+    settings = make_settings()
+    settings.aws_region = "us-east-1"
+    settings.ses_from_email = "no-reply@example.com"
+    mock_client = MagicMock()
+
+    with patch("app.services.email.boto3.client", return_value=mock_client):
+        sender = SesEmailSender(settings)
+        await sender.send_email_two_step_change_notice(
+            "user@example.com",
+            enabled=True,
+        )
+
+    payload = mock_client.send_email.call_args.kwargs
+    assert payload["Content"]["Simple"]["Subject"]["Data"] == (
+        "Email verification was enabled on your Spike account"
+    )
+    assert "contact support immediately" in payload["Content"]["Simple"]["Body"]["Text"]["Data"]

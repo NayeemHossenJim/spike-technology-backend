@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import AppEnvironment, Settings
+from app.models.auth import EmailTwoStepPurpose
 from app.schemas.auth import RegisterRequest
 from app.services.auth import AuthService, DuplicateEmailError
 
@@ -20,6 +21,22 @@ class NoopEmailSender:
 
     async def send_email_change_otp(self, recipient: str, otp: str) -> None:
         raise AssertionError("Email change is not part of this test")
+
+    async def send_email_two_step_otp(
+        self,
+        recipient: str,
+        otp: str,
+        purpose: EmailTwoStepPurpose,
+    ) -> None:
+        raise AssertionError("Email two-step verification is not part of this test")
+
+    async def send_email_two_step_change_notice(
+        self,
+        recipient: str,
+        *,
+        enabled: bool,
+    ) -> None:
+        raise AssertionError("Email two-step verification is not part of this test")
 
 
 def make_settings() -> Settings:
