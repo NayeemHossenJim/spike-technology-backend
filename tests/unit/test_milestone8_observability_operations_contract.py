@@ -2,7 +2,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ALERTS = ROOT / "ops" / "prometheus" / "alerts.yml"
-RUNBOOK = ROOT / "docs" / "operations_runbook.md"
+RUNBOOK = ROOT / "README.md"
 
 
 def test_observability_alert_rules_cover_core_operational_failures() -> None:
