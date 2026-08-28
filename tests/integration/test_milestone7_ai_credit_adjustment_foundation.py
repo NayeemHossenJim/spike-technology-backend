@@ -13,7 +13,7 @@ from app.models.ai import (
     AICreditAdjustmentReason,
 )
 from app.models.base import utc_now
-from app.models.subscription import SubscriptionEntitlement
+from app.models.subscription import EntitlementKey, SubscriptionEntitlement
 from app.services.ai_credits import AICreditService
 from tests.integration.test_milestone5_ai_credits import onboard_owner
 
@@ -37,6 +37,7 @@ async def test_adjustment_ledger_extends_effective_credit_limit(
                 select(SubscriptionEntitlement).where(
                     SubscriptionEntitlement.business_id == scope.business_id,
                     SubscriptionEntitlement.subscription_id == subscription_id,
+                    SubscriptionEntitlement.key == EntitlementKey.AI_FULL_RESPONSES.value,
                 )
             )
         ).scalar_one()

@@ -21,8 +21,14 @@ from sqlmodel import Field
 from app.models.base import TenantOwnedModel, TimestampedModel, UUIDPrimaryKey
 
 TRIAL_DAYS = 14
-AI_FULL_RESPONSES_PER_PERIOD = 15
+TRIAL_AI_FULL_RESPONSES_PER_PERIOD = 15
+TRIAL_DASHBOARD_LIMIT = 1
+PREMIUM_AI_FULL_RESPONSES_PER_PERIOD = 250
 PREMIUM_DASHBOARD_LIMIT = 20
+PRO_AI_FULL_RESPONSES_PER_PERIOD = 2_000
+
+# Compatibility alias retained for code that refers specifically to the trial allowance.
+AI_FULL_RESPONSES_PER_PERIOD = TRIAL_AI_FULL_RESPONSES_PER_PERIOD
 
 
 class SeededPlanCode(StrEnum):

@@ -9,8 +9,11 @@ from pydantic import ValidationError
 from app.main import create_app
 from app.models.base import utc_now
 from app.models.subscription import (
-    AI_FULL_RESPONSES_PER_PERIOD,
+    PREMIUM_AI_FULL_RESPONSES_PER_PERIOD,
     PREMIUM_DASHBOARD_LIMIT,
+    PRO_AI_FULL_RESPONSES_PER_PERIOD,
+    TRIAL_AI_FULL_RESPONSES_PER_PERIOD,
+    TRIAL_DASHBOARD_LIMIT,
     TRIAL_DAYS,
     Plan,
     Subscription,
@@ -23,8 +26,11 @@ from app.services.tenant import tenant_select
 
 def test_confirmed_subscription_limits_are_locked() -> None:
     assert TRIAL_DAYS == 14
-    assert AI_FULL_RESPONSES_PER_PERIOD == 15
+    assert TRIAL_AI_FULL_RESPONSES_PER_PERIOD == 15
+    assert TRIAL_DASHBOARD_LIMIT == 1
+    assert PREMIUM_AI_FULL_RESPONSES_PER_PERIOD == 250
     assert PREMIUM_DASHBOARD_LIMIT == 20
+    assert PRO_AI_FULL_RESPONSES_PER_PERIOD == 2_000
 
 
 def test_business_create_strips_name_and_forbids_client_tenant_ids() -> None:

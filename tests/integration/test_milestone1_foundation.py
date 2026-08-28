@@ -106,23 +106,28 @@ async def test_migration_seeds_only_confirmed_public_plan_values(
         for entitlement in by_code["premium"]["entitlements"]
     }
     assert premium_entitlements == {
-        "ai_full_responses": 15,
+        "ai_full_responses": 250,
         "dashboards": 20,
     }
-    assert by_code["pro"]["entitlements"] == [
-        {
-            "key": "ai_full_responses",
-            "is_enabled": True,
-            "limit_value": 15,
-        }
-    ]
-    assert by_code["enterprise"]["entitlements"] == [
-        {
-            "key": "ai_full_responses",
-            "is_enabled": True,
-            "limit_value": 15,
-        }
-    ]
+    pro_entitlements = {
+        entitlement["key"]: entitlement["limit_value"]
+        for entitlement in by_code["pro"]["entitlements"]
+    }
+    assert pro_entitlements == {
+        "ai_full_responses": 2000,
+        "dashboards": None,
+    }
+    enterprise_entitlements = {
+        entitlement["key"]: entitlement["limit_value"]
+        for entitlement in by_code["enterprise"]["entitlements"]
+    }
+    assert enterprise_entitlements == {
+        "ai_full_responses": None,
+        "dashboards": None,
+    }
+    assert all(
+        entitlement["is_enabled"] is True for plan in plans for entitlement in plan["entitlements"]
+    )
 
 
 @pytest.mark.integration
@@ -175,7 +180,13 @@ async def test_business_onboarding_atomically_creates_owner_trial_and_entitlemen
             "is_enabled": True,
             "limit_value": AI_FULL_RESPONSES_PER_PERIOD,
             "source": "trial",
-        }
+        },
+        {
+            "key": "dashboards",
+            "is_enabled": True,
+            "limit_value": 1,
+            "source": "trial",
+        },
     ]
 
     async with session_factory() as session:
@@ -184,7 +195,8 @@ async def test_business_onboarding_atomically_creates_owner_trial_and_entitlemen
         subscriptions = await session.scalar(select(func.count()).select_from(Subscription))
         grants = await session.scalar(select(func.count()).select_from(SubscriptionEntitlement))
         subscription = (await session.execute(select(Subscription))).scalar_one()
-        assert businesses == assignments == subscriptions == grants == 1
+        assert businesses == assignments == subscriptions == 1
+        assert grants == 2
         assert subscription.trial_ends_at - subscription.trial_started_at == timedelta(
             days=TRIAL_DAYS
         )
@@ -331,12 +343,38 @@ async def test_entitlements_enforce_limit_and_expired_trial(
                 EntitlementKey.AI_FULL_RESPONSES,
                 current_usage=15,
             )
+
+        dashboard_grant = await service.require(
+            scope,
+            EntitlementKey.DASHBOARDS,
+            current_usage=0,
+        )
+        assert dashboard_grant.limit_value == 1
+        assert dashboard_grant.remaining == 1
+        with pytest.raises(EntitlementLimitReachedError):
+            await service.require(
+                scope,
+                EntitlementKey.DASHBOARDS,
+                current_usage=1,
+            )
+
+        disable_result = await session.execute(
+            select(SubscriptionEntitlement).where(
+                SubscriptionEntitlement.subscription_id == subscription_id,
+                SubscriptionEntitlement.key == EntitlementKey.DASHBOARDS.value,
+            )
+        )
+        dashboard_entitlement = disable_result.scalar_one()
+        dashboard_entitlement.is_enabled = False
+        await session.flush()
         with pytest.raises(EntitlementDeniedError):
             await service.require(
                 scope,
                 EntitlementKey.DASHBOARDS,
                 current_usage=0,
             )
+        dashboard_entitlement.is_enabled = True
+        await session.flush()
 
         subscription = await session.get(Subscription, subscription_id)
         assert subscription is not None

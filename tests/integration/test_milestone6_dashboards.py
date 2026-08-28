@@ -25,17 +25,34 @@ async def grant_dashboards(
     *,
     limit: int,
 ) -> None:
+    """Raise the tenant's dashboard allowance above the default trial grant."""
+
     async with session_factory() as session:
-        session.add(
-            SubscriptionEntitlement(
-                business_id=UUID(onboarding["business"]["id"]),
-                subscription_id=UUID(onboarding["subscription"]["id"]),
-                key=EntitlementKey.DASHBOARDS,
-                source=EntitlementSource.OVERRIDE,
-                is_enabled=True,
-                limit_value=limit,
+        existing = (
+            await session.execute(
+                select(SubscriptionEntitlement).where(
+                    SubscriptionEntitlement.business_id == UUID(onboarding["business"]["id"]),
+                    SubscriptionEntitlement.subscription_id
+                    == UUID(onboarding["subscription"]["id"]),
+                    SubscriptionEntitlement.key == EntitlementKey.DASHBOARDS.value,
+                )
             )
-        )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                SubscriptionEntitlement(
+                    business_id=UUID(onboarding["business"]["id"]),
+                    subscription_id=UUID(onboarding["subscription"]["id"]),
+                    key=EntitlementKey.DASHBOARDS,
+                    source=EntitlementSource.OVERRIDE,
+                    is_enabled=True,
+                    limit_value=limit,
+                )
+            )
+        else:
+            existing.source = EntitlementSource.OVERRIDE
+            existing.is_enabled = True
+            existing.limit_value = limit
         await session.commit()
 
 
@@ -55,7 +72,7 @@ def dashboard_payload(
 
 
 @pytest.mark.integration
-async def test_trial_without_dashboard_entitlement_is_denied(
+async def test_trial_allows_exactly_one_dashboard(
     client: AsyncClient,
     email_sender: InMemoryEmailSender,
     session_factory: async_sessionmaker[AsyncSession],
@@ -63,23 +80,63 @@ async def test_trial_without_dashboard_entitlement_is_denied(
     token, _ = await onboard_owner(
         client,
         email_sender,
-        email="m6-trial-denied@example.com",
-        business_name="M6 Trial Denied",
+        email="m6-trial-limit@example.com",
+        business_name="M6 Trial Limit",
     )
 
-    response = await client.post(
+    first = await client.post(
         "/api/v1/dashboards",
         headers=bearer(token),
         json=dashboard_payload("Trial dashboard"),
     )
+    assert first.status_code == 201
 
-    assert response.status_code == 403
-    assert response.json() == {
+    second = await client.post(
+        "/api/v1/dashboards",
+        headers=bearer(token),
+        json=dashboard_payload("Second trial dashboard"),
+    )
+    assert second.status_code == 409
+    assert second.json() == {
+        "detail": "The dashboard limit has been reached for the current subscription."
+    }
+
+    async with session_factory() as session:
+        persisted = await session.scalar(select(func.count()).select_from(Dashboard))
+        assert persisted == 1
+
+    disabled_email = "m6-trial-disabled@example.com"
+    disabled_token, disabled_onboarding = await onboard_owner(
+        client,
+        email_sender,
+        email=disabled_email,
+        business_name="M6 Trial Disabled",
+    )
+    async with session_factory() as session:
+        entitlement = (
+            await session.execute(
+                select(SubscriptionEntitlement).where(
+                    SubscriptionEntitlement.subscription_id
+                    == UUID(disabled_onboarding["subscription"]["id"]),
+                    SubscriptionEntitlement.key == EntitlementKey.DASHBOARDS.value,
+                )
+            )
+        ).scalar_one()
+        entitlement.is_enabled = False
+        await session.commit()
+
+    denied = await client.post(
+        "/api/v1/dashboards",
+        headers=bearer(disabled_token),
+        json=dashboard_payload("Disabled trial dashboard"),
+    )
+    assert denied.status_code == 403
+    assert denied.json() == {
         "detail": "Dashboard access is not enabled for the current subscription."
     }
 
     async with session_factory() as session:
-        assert await session.scalar(select(func.count()).select_from(Dashboard)) == 0
+        assert await session.scalar(select(func.count()).select_from(Dashboard)) == 1
 
 
 @pytest.mark.integration

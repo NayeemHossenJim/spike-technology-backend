@@ -321,7 +321,13 @@ async def test_checkout_is_idempotent_and_does_not_grant_before_webhook(
             "is_enabled": True,
             "limit_value": 15,
             "source": "trial",
-        }
+        },
+        {
+            "key": "dashboards",
+            "is_enabled": True,
+            "limit_value": 1,
+            "source": "trial",
+        },
     ]
 
     async with session_factory() as session:
@@ -563,8 +569,8 @@ async def test_webhooks_renewals_cancellation_history_and_entitlements_stay_sync
         {
             "key": "dashboards",
             "is_enabled": True,
-            "limit_value": 20,
-            "source": "plan",
+            "limit_value": 1,
+            "source": "trial",
         },
     ]
 
@@ -670,7 +676,7 @@ async def test_webhooks_renewals_cancellation_history_and_entitlements_stay_sync
         {
             "key": "ai_full_responses",
             "is_enabled": True,
-            "limit_value": 15,
+            "limit_value": 250,
             "source": "plan",
         },
         {

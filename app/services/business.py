@@ -10,7 +10,8 @@ from sqlmodel import select
 from app.models.base import utc_now
 from app.models.business import Business, RoleAssignment, TenantRole
 from app.models.subscription import (
-    AI_FULL_RESPONSES_PER_PERIOD,
+    TRIAL_AI_FULL_RESPONSES_PER_PERIOD,
+    TRIAL_DASHBOARD_LIMIT,
     TRIAL_DAYS,
     EntitlementKey,
     EntitlementSource,
@@ -103,9 +104,19 @@ class BusinessService:
             key=EntitlementKey.AI_FULL_RESPONSES,
             source=EntitlementSource.TRIAL,
             is_enabled=True,
-            limit_value=AI_FULL_RESPONSES_PER_PERIOD,
+            limit_value=TRIAL_AI_FULL_RESPONSES_PER_PERIOD,
         )
-        self.session.add_all([business, assignment, subscription, trial_ai_entitlement])
+        trial_dashboard_entitlement = SubscriptionEntitlement(
+            business_id=business.id,
+            subscription_id=subscription.id,
+            key=EntitlementKey.DASHBOARDS,
+            source=EntitlementSource.TRIAL,
+            is_enabled=True,
+            limit_value=TRIAL_DASHBOARD_LIMIT,
+        )
+        self.session.add_all(
+            [business, assignment, subscription, trial_ai_entitlement, trial_dashboard_entitlement]
+        )
         try:
             await self.session.commit()
         except IntegrityError as exc:

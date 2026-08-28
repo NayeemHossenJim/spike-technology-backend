@@ -12,7 +12,7 @@ from sqlmodel import func, select
 
 from app.models.ai import AICreditAccount, AICreditLedgerEntry, AICreditLedgerStatus
 from app.models.base import utc_now
-from app.models.subscription import Subscription, SubscriptionEntitlement
+from app.models.subscription import EntitlementKey, Subscription, SubscriptionEntitlement
 from app.services.ai_credits import (
     AICreditReservationNotFoundError,
     AICreditService,
@@ -227,6 +227,7 @@ async def test_concurrent_reservations_cannot_overspend(
                 select(SubscriptionEntitlement).where(
                     SubscriptionEntitlement.business_id == scope.business_id,
                     SubscriptionEntitlement.subscription_id == subscription_id,
+                    SubscriptionEntitlement.key == EntitlementKey.AI_FULL_RESPONSES.value,
                 )
             )
         ).scalar_one()

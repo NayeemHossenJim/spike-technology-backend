@@ -21,7 +21,7 @@ from app.models.ai import (
     AIMessageStatus,
 )
 from app.models.base import utc_now
-from app.models.subscription import Subscription, SubscriptionEntitlement
+from app.models.subscription import EntitlementKey, Subscription, SubscriptionEntitlement
 from app.models.user import User
 from app.services.ai_conversations import AIConversationService
 from app.services.ai_credits import AICreditService
@@ -274,7 +274,8 @@ async def test_pre_reservation_failures_create_no_ledger_and_skip_provider(
             entitlement = (
                 await session.execute(
                     select(SubscriptionEntitlement).where(
-                        SubscriptionEntitlement.subscription_id == subscription_id
+                        SubscriptionEntitlement.subscription_id == subscription_id,
+                        SubscriptionEntitlement.key == EntitlementKey.AI_FULL_RESPONSES.value,
                     )
                 )
             ).scalar_one()
