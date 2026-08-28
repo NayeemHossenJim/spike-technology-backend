@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_tenant
@@ -15,6 +15,7 @@ from app.schemas.upload import (
     ReportProcessingJobRead,
     ReportUploadBatchCreate,
     ReportUploadBatchCreatedRead,
+    ReportUploadBatchPageRead,
     ReportUploadBatchRead,
     ReportUploadRead,
 )
@@ -98,6 +99,41 @@ def _storage_unavailable() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Report upload storage is temporarily unavailable.",
+    )
+
+
+@router.get(
+    "/batches",
+    response_model=ReportUploadBatchPageRead,
+)
+async def list_report_upload_batches(
+    tenant: Annotated[TenantContext, Depends(get_current_tenant)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    storage: Annotated[S3UploadGateway, Depends(get_s3_upload_gateway)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+) -> ReportUploadBatchPageRead:
+    try:
+        page = await _service(
+            session=session,
+            settings=settings,
+            storage=storage,
+        ).list_batches(
+            scope=tenant.scope,
+            limit=limit,
+            offset=offset,
+        )
+    except ReportUploadsDisabledError as exc:
+        raise _storage_unavailable() from exc
+    except S3StorageError as exc:
+        raise _storage_unavailable() from exc
+
+    return ReportUploadBatchPageRead(
+        items=[_batch_read(item) for item in page.items],
+        total=page.total,
+        limit=limit,
+        offset=offset,
     )
 
 

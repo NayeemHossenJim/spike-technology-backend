@@ -12,13 +12,13 @@ Current validated checkpoint:
 |---|---|
 | Branch | `develop` |
 | Milestone 7 merge commit | `2c5ee900ba987393f4aaa4986b780798962079be` |
-| Alembic head | `0015_m7_ai_credit_adjustments` |
-| Full test suite | **283 passed** |
-| Full integration suite | **85 passed** |
+| Alembic head | `0020_gap06_v1_entitlements` |
+| Full test suite | **478 passed** |
+| Full integration suite | **98 passed** |
 | Milestone 7 integration suite | **22 passed** |
 
 The complete migration chain has also been proven against a fresh PostgreSQL
-database from the initial migration through `0015`.
+database from the initial migration through `0020`.
 
 ---
 
@@ -245,16 +245,31 @@ Implemented:
 - rollback on audit failure;
 - Customer Service mutation denial.
 
-### Milestone 7 release validation
+---
+
+## Figma-contract gaps / V1 Contract Completion
+
+**Status: COMPLETE**
+
+Implemented:
+
+- report-grounded dashboard insight and AI analysis contracts;
+- self-service profile fields;
+- verified account credential and deletion lifecycle;
+- email two-step verification challenges;
+- aligned approved v1 plan and trial entitlements;
+- paginated tenant upload history for the Figma report-history views.
+
+### Final V1 release validation
 
 Validated:
 
 - M7 integration: **22 passed**;
-- complete integration: **85 passed**;
-- complete project: **283 passed**;
-- migration upgrade: empty DB -> `0015`;
-- migration downgrade: `0015` -> `0012`;
-- migration re-upgrade: `0012` -> `0015`;
+- complete integration: **98 passed**;
+- complete project: **478 passed**;
+- migration upgrade: empty DB -> `0020`;
+- migration downgrade: `0020` -> `0015`;
+- migration re-upgrade: `0015` -> `0020`;
 - admin route surface verified;
 - secret-like Git additions scan passed;
 - Ruff passed;

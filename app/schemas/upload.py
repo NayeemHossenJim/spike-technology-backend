@@ -94,6 +94,15 @@ class ReportUploadBatchRead(BaseModel):
     processing_jobs: list[ReportProcessingJobRead]
 
 
+class ReportUploadBatchPageRead(BaseModel):
+    """Paginated tenant upload history for the Figma report-history views."""
+
+    items: list[ReportUploadBatchRead]
+    total: int
+    limit: int
+    offset: int
+
+
 class ReportUploadBatchCreatedRead(BaseModel):
     id: UUID
     status: ReportUploadBatchStatus

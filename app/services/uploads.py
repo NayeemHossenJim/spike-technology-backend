@@ -12,6 +12,7 @@ from zipfile import BadZipFile, ZipFile
 import olefile
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import func
 
 from app.core.config import Settings
 from app.models.base import utc_now
@@ -134,6 +135,12 @@ class CreatedReportUpload:
 class CreatedReportUploadBatch:
     batch: ReportUploadBatch
     uploads: tuple[CreatedReportUpload, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReportUploadBatchPage:
+    items: tuple[ReportUploadBatchResult, ...]
+    total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -537,6 +544,74 @@ class ReportUploadService:
         return tuple(
             jobs_by_upload_id[upload.id] for upload in uploads if upload.id in jobs_by_upload_id
         )
+
+    async def list_batches(
+        self,
+        *,
+        scope: TenantScope,
+        limit: int,
+        offset: int,
+        status: ReportUploadBatchStatus | None = None,
+    ) -> ReportUploadBatchPage:
+        """Return tenant upload history without requiring live storage access."""
+
+        criteria = ()
+        if status is not None:
+            criteria = (ReportUploadBatch.status == status.value,)
+
+        total = await self.session.scalar(
+            scope.select(ReportUploadBatch, *criteria).with_only_columns(
+                func.count(ReportUploadBatch.id)
+            )
+        )
+        batches_result = await self.session.execute(
+            scope.select(ReportUploadBatch, *criteria)
+            .order_by(ReportUploadBatch.created_at.desc(), ReportUploadBatch.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        batches = tuple(batches_result.scalars().all())
+        if not batches:
+            return ReportUploadBatchPage(items=(), total=int(total or 0))
+
+        batch_ids = tuple(batch.id for batch in batches)
+        uploads_result = await self.session.execute(
+            scope.select(
+                ReportUpload,
+                ReportUpload.batch_id.in_(batch_ids),
+            ).order_by(ReportUpload.batch_id, ReportUpload.batch_position)
+        )
+        uploads_by_batch: dict[UUID, list[ReportUpload]] = {}
+        all_uploads: list[ReportUpload] = []
+        for upload in uploads_result.scalars().all():
+            uploads_by_batch.setdefault(upload.batch_id, []).append(upload)
+            all_uploads.append(upload)
+
+        jobs_by_upload_id: dict[UUID, ReportProcessingJob] = {}
+        if all_uploads:
+            jobs_result = await self.session.execute(
+                scope.select(
+                    ReportProcessingJob,
+                    ReportProcessingJob.report_upload_id.in_(
+                        tuple(upload.id for upload in all_uploads)
+                    ),
+                )
+            )
+            jobs_by_upload_id = {job.report_upload_id: job for job in jobs_result.scalars().all()}
+
+        items = tuple(
+            ReportUploadBatchResult(
+                batch=batch,
+                uploads=tuple(uploads_by_batch.get(batch.id, ())),
+                processing_jobs=tuple(
+                    jobs_by_upload_id[upload.id]
+                    for upload in uploads_by_batch.get(batch.id, ())
+                    if upload.id in jobs_by_upload_id
+                ),
+            )
+            for batch in batches
+        )
+        return ReportUploadBatchPage(items=items, total=int(total or 0))
 
     async def get_batch(
         self,
