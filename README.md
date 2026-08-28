@@ -13,9 +13,9 @@ validated, merged into `develop`, and pushed to the remote repository.
 |---|---|
 | Current branch | `develop` |
 | Milestone 7 merge | `2c5ee900ba987393f4aaa4986b780798962079be` |
-| Alembic head | `0015_m7_ai_credit_adjustments` |
-| Full project regression | **283 passed** |
-| Integration regression | **85 passed** |
+| Alembic head | `0020_gap06_v1_entitlements` |
+| Full project regression | **478 passed** |
+| Integration regression | **98 passed** |
 | Milestone 7 integration | **22 passed** |
 | PostgreSQL | Healthy |
 | Redis | Healthy |
@@ -32,6 +32,7 @@ validated, merged into `develop`, and pushed to the remote repository.
 - [x] Milestone 5 - Gemini AI, atomic credits and conversations
 - [x] Milestone 6 - Dashboards, snapshots, exports and PDF
 - [x] Milestone 7 - Admin operations and security controls
+- [x] V1 Figma-Contract Gaps - Paginated upload history, profile fields, account security, and dashboard integrations
 
 ### Next milestone 
 
@@ -68,8 +69,8 @@ Production-oriented FastAPI backend for the confirmed Spike Technology v1 scope.
 | **1 — Business and subscription foundation** | Business onboarding, owner assignment, plan/subscription records, entitlement checks, and tenant isolation | Complete |
 | **2 — Stripe billing** | Checkout, signed/idempotent webhooks, renewals, cancellation scheduling, billing history, and entitlement synchronization | Complete |
 | **3 — Secure report uploads** | Private S3 storage, tenant-owned upload batches, presigned POSTs, file security validation, and upload status | Complete |
-| **4 — Data processing** | Durable tenant-bound jobs, reliable Celery dispatch, bounded CSV/XLS/XLSX parsing, and private versioned artifacts | In progress — Stages 1–3 complete |
-| **5+ — Product workflow** | Gemini, atomic credit ledger, dashboards, PDF, and admin operations | Pending |
+| **4 — Data processing** | Durable tenant-bound jobs, reliable Celery dispatch, bounded CSV/XLS/XLSX parsing, and private versioned artifacts | Complete |
+| **5+ — Product workflow** | Gemini, atomic credit ledger, dashboards, PDF, and admin operations | Complete |
 
 The current Milestone 4 checkpoint creates durable report-processing jobs and writes
 private normalized artifacts. It deliberately does **not** call Gemini, consume AI
