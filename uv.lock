@@ -3,13 +3,13 @@ revision = 3
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version < '3.12' and sys_platform == 'win32'",
     "python_full_version >= '3.13' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version >= '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'win32'",
+    "python_full_version < '3.12' and sys_platform == 'emscripten'",
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
@@ -921,10 +921,10 @@ version = "2.5.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version >= '3.13' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version >= '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
     "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/fd/89965aa4ac08c74998539fcbf24fa3540f3e15237fbeb6bcf9c908f4aade/numpy-2.5.1.tar.gz", hash = "sha256:a48a113e6afea91f5608793bafa7ef2ad481fefbda87ec5069f483de61cb9fa3", size = 20755553, upload-time = "2026-07-04T17:08:00.933Z" }
@@ -1507,7 +1507,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9,<1.0" },
     { name = "sqlalchemy", specifier = ">=2.0.36,<2.1" },
     { name = "sqlmodel", specifier = ">=0.0.24,<0.1" },
-    { name = "stripe", extras = ["async"], specifier = "==14.4.1" },
+    { name = "stripe", extras = ["async"], specifier = "==15.6.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
     { name = "weasyprint", marker = "extra == 'phase3'", specifier = ">=66.0,<70.0" },
     { name = "xlrd", specifier = ">=2.0,<3.0" },
@@ -1577,15 +1577,15 @@ wheels = [
 
 [[package]]
 name = "stripe"
-version = "14.4.1"
+version = "15.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/63/01/59d92650146c6340e333c22b8a238561b022e8641ba255298dfe46b4137d/stripe-14.4.1.tar.gz", hash = "sha256:e3eecfb336819326cd2ab9a93f98eb01b49c4d4d93c9d167a52a68ab99c19a88", size = 1473321, upload-time = "2026-03-06T22:59:45.822Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/03/e7/1d33faefbd3752b17207ff57933ac677ed5538f83ff2ab38195adf18027a/stripe-15.6.0.tar.gz", hash = "sha256:0e6bb67863bc3d1d805394a6a12dd1aaedf638511f175ec4c3612e4dc8f952d0", size = 1562255, upload-time = "2026-08-27T04:10:43.613Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/35/0f/547eab75052384a72771b396a484556e5636629c031e5eafa8dc27af89ed/stripe-14.4.1-py3-none-any.whl", hash = "sha256:d6722b985dc3b4d6da01ff4fa95a975d3694a89bba96895bf17aa858073ff2b8", size = 2116642, upload-time = "2026-03-06T22:59:43.72Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/28/aabe12c5440748a65c91e751a7ed038a41655343cd7e6d55b0640f76b2a1/stripe-15.6.0-py3-none-any.whl", hash = "sha256:6d668d25f863fc4ac73811f387a2dab27d3b8c344261c76c05cc61ba6b9edc09", size = 2217116, upload-time = "2026-08-27T04:10:41.248Z" },
 ]
 
 [package.optional-dependencies]
